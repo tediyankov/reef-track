@@ -1,0 +1,45 @@
+# ---- data & outputs (never commit) ----
+data/*
+!data/README.md
+*.mp4
+*.MP4
+*.mov
+*.MOV
+*.ply
+*.npz
+*.npy
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+
+# ---- vendored third-party code / weights (fetched by scripts) ----
+third_party/*
+!third_party/README.md
+
+# ---- python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# ---- envs / editors / OS ----
+.env
+.venv/
+.vscode/
+.idea/
+.DS_Store
+._*
+*.swp
+
+# ---- JASMIN / SLURM logs ----
+slurm-*.out
+logs/
+scripts/jasmin/env.sh
