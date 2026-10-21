@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reeftrack"
+version = "0.1.0"
+description = "Label-free focal-fish tracking and underwater 3D reef reconstruction from a single swim-through video."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Teddy Yankov" }]
+# Runtime dependencies are managed by environment.yml (conda/mamba); install with `pip install -e . --no-deps`.
+dependencies = []
+
+[project.scripts]
+reeftrack = "reeftrack.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+reeftrack = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "slow: needs model weights / network (deselect with -m 'not slow')",
+    "gui: needs a Qt display",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["third_party"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "NPY"]
+ignore = ["E501", "B905", "UP007", "UP045"]

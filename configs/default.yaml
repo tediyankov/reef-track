@@ -1,0 +1,82 @@
+# Default pipeline configuration. Override per run with `--config my.yaml`
+# (only the keys you change are needed; they are merged onto these defaults).
+
+paths:
+  data_root: data/runs          # each run gets data/runs/<run_name>/
+
+video:
+  proxy_fps: 30                 # working frame rate (source 119.88 fps -> every 4th frame)
+  proxy_height: 1080            # working resolution (4K -> 1080p); masks are stored at this size
+  rotate: 0                     # 0 | 90 | 180 | 270 (some rigs are mounted sideways)
+  crf: 18                       # proxy quality (lower = better/larger)
+  gop: 15                       # short keyframe interval -> fast, exact scrubbing in the GUI
+
+tracking:
+  backend: sam3                 # sam3 (gated; request access on HF) | sam2 (open)
+  model_ids:
+    sam3: facebook/sam3
+    sam2: facebook/sam2.1-hiera-small
+  device: auto                  # auto | cuda | mps | cpu
+  # --- when do we declare the focal fish "lost"? (tracklet break) ---
+  presence_logit_threshold: 0.0 # SAM's object-presence head; < 0 means "object not visible"
+  min_area_frac: 0.00002        # masks smaller than this fraction of the frame count as lost
+  max_area_change: 4.0          # sudden x4 area change vs recent median -> suspicious
+  min_appearance_sim: 0.55      # colour-histogram similarity to the clicked fish
+  motion_gate_sigmas: 6.0       # Kalman-predicted position gate (SAMURAI-style motion prior)
+  patience: 3                   # consecutive suspicious frames before the tracklet breaks
+  keep_memory_frames: 16        # recent frames kept in SAM memory (bounds RAM on long clips)
+  backfill: true                # on re-acquisition also propagate *backwards* to fill the gap
+
+recon:
+  backend: wat3r                # wat3r (underwater-adapted VGGT) | vggt
+  model_ids:
+    wat3r: lsxi77777/Wat3R
+    vggt: facebook/VGGT-1B
+  device: auto
+  frame_range: null             # [first, last] proxy frames to reconstruct (null = whole clip);
+                                # use it to skip surface / out-of-water footage
+  keyframe_fps: 3               # frames per second sent to the 3D model
+  sharpness_window: true        # within each keyframe slot pick the sharpest frame (motion blur)
+  chunk_size: 32                # frames per forward pass (memory bound; 32 fits ~16 GB)
+  chunk_overlap: 8              # shared frames used to stitch neighbouring chunks
+  image_size: 518               # model input width (VGGT/Wat3R native)
+  conf_percentile: 50           # drop the least-confident X% of pixels per frame
+  max_depth_percentile: 95      # drop far "water column" pixels per frame
+  mask_fish: true               # remove the tracked fish from the reef cloud (moving object)
+  drop_above_camera: 0.02       # remove points above the diver path (+margin, fraction of scene size):
+                                # the water surface mirrors the reef in shallow water. null = keep
+                                # (use null for walls / overhangs filmed from below)
+  camera_height_percentile: 50  # 'typical' camera height for that cut (snorkellers touch the surface)
+  voxel_size: 0.002             # fraction of the scene size (monocular units are arbitrary)
+  outlier_nb_neighbors: 20
+  outlier_std_ratio: 2.0
+  # --- stereo rig only (`reconstruct --stereo`) ---
+  stereo_scale_mode: joint      # joint: baselines + overlaps, weights learned from data (default)
+                                # independent: each chunk scaled by its own baselines (seams)
+                                # global: follow overlaps exactly, one metric factor (keeps drift)
+  stereo_right_depth: true      # also put the right camera's depth into the cloud (more coverage)
+  cache_dir: ~/.cache/reeftrack # raw model outputs, so re-stitching takes seconds not minutes
+
+fusion:
+  mask_erode_px: 2              # shrink the fish mask before reading depth (avoid edge bleed)
+  depth_stat: median            # robust fish depth from pixels inside the mask
+  max_interp_gap_s: 2.0         # interpolate trajectory gaps shorter than this; longer stay gaps
+  smooth_window: 5              # median filter (in keyframes) on the 3D trajectory
+
+annotation:
+  # Behaviour categories offered in the GUI (order = number keys 1-9, 0, -, =).
+  # Changing this list never breaks old CSVs: unknown categories are kept and flagged.
+  behaviours:
+    - Calm Swimming
+    - Foraging
+    - Near Other Picasso triggerfish
+    - Sheltering
+    - Stationary
+    - Cleaner fish interaction
+    - Chasing
+    - Erratic Swimming
+    - Escaping
+    - Fighting
+    - Housekeeping
+    - Scratching
+  annotator: ""                 # optional; otherwise the GUI asks once and remembers it

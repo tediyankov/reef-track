@@ -1,0 +1,47 @@
+# Reproducible environment for reef-track.
+#
+# Create (mamba or conda, both work):
+#   mamba env create --prefix ~/envs/reef-track -f environment.yml
+#   eval "$(mamba shell hook --shell bash)" && mamba activate ~/envs/reef-track
+#   pip install -e . --no-deps
+#
+# The same file works on macOS (Apple Silicon -> PyTorch uses the MPS GPU backend)
+# and on Linux/JASMIN (pip resolves CUDA-enabled PyTorch wheels automatically).
+name: reef-track
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - ffmpeg>=6            # video decoding / trimming / proxy encoding
+  - pip:
+      # --- deep learning ---
+      - torch>=2.6
+      - torchvision>=0.21
+      - transformers>=5.0      # Sam3TrackerVideoModel / Sam2VideoModel
+      - huggingface_hub>=0.30
+      - safetensors>=0.4.3
+      - accelerate>=1.0
+      # Wat3R (vendored into third_party/ by scripts/fetch_wat3r.sh) needs these:
+      - einops
+      - hydra-core==1.3.2
+      - omegaconf
+      # --- numerics / IO ---
+      - numpy>=1.26,<2.3
+      - scipy>=1.11
+      - opencv-python-headless>=4.9
+      - pillow>=10
+      - pyyaml>=6
+      - pydantic>=2.7
+      - typer>=0.12
+      - tqdm
+      # --- 3D ---
+      - open3d>=0.18           # point-cloud cleaning, voxel downsampling, viewer
+      - trimesh>=4
+      - plotly>=5.20           # self-contained HTML 3D viewer for sharing
+      # --- GUI ---
+      - pyside6>=6.7
+      # --- dev ---
+      - pytest>=8
+      - pytest-cov
+      - ruff
