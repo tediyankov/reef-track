@@ -1,0 +1,5 @@
+# Run-specific overrides for data/runs/cait_GX010703_12998-38448
+# (only the keys that differ from configs/default.yaml).
+recon:
+  # proxy frames ~0-2100 are surface / above-water / diver footage; reconstruct the reef only
+  frame_range: [2100, 6362]
