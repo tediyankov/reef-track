@@ -123,7 +123,7 @@ def _compress_many(videos: list[Path], dry_run: bool = False) -> None:
         todo.append(v)
         minutes += fm.n_proxy / fm.proxy_fps / 60 * 1.1
         typer.echo(f"todo  {rel}  ({v.stat().st_size / 2**30:.1f} GB original)")
-    typer.echo(f"{len(todo)} to compress, roughly {minutes / 60:.1f} h on a recent Mac (~{1.4 * len(todo):.0f} GB on RFS)")
+    typer.echo(f"{len(todo)} to compress, roughly {minutes / 60:.1f} h on a recent Mac (~{1.5 * len(todo):.1f} GB on RFS)")
     if dry_run:
         return
     from tqdm import tqdm
