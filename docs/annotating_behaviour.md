@@ -49,6 +49,25 @@ closes. A behaviour must be chosen before OK can be pressed.
 * If you press O before I by mistake, the frames are simply swapped.
 * While the fish is out of view, don't annotate. Leave a gap, or mention it in a comment.
 
+## Fill the gaps: every frame needs a behaviour
+
+The goal is a **complete** record: every frame of the video belongs to at least one behaviour
+(use *Out of view* when the fish isn't visible). A good way to work:
+
+1. First go through the video marking the behaviours you're sure about with **I** / **O**.
+2. Then fill what's left. Frames with no behaviour yet show as **hatched** stretches in the
+   behaviour lane under the timeline, and the panel says how much is labelled, e.g.
+   "Labelled 92.4% of frames · 5 gaps".
+   * Press **G** (next gap) or **Shift+G** (previous gap), or **click a hatched stretch**: the
+     whole gap is selected as the start/end.
+   * Press **B** and pick the behaviour. **Double-clicking** a gap opens this window directly.
+     If only part of the gap is one behaviour, change the start/end in the window and fill the
+     rest afterwards.
+3. When the panel shows **"✓ Every frame has a behaviour"**, the video is done.
+
+Tip: **click a coloured chunk** on the timeline to highlight its row in the table (double-click
+to edit it). Selecting a row in the table outlines its chunk on the timeline.
+
 ## Review and fix
 
 * The coloured lane under the timeline shows all events; the labels on the video show what is

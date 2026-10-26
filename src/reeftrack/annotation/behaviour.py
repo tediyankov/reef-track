@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import numpy as np
+
 from reeftrack.annotation.events import (
     FRAME_COLS,
     TAIL_COLS,
@@ -62,6 +64,29 @@ class BehaviourLog(IntervalLog):
 
     def add(self, behaviour: str, start: int, end: int, comment: str = "", annotator: str = "") -> Event:
         return super().add(start, end, comment, annotator, behaviour=behaviour)
+
+    # ---- full segmentation (every frame has at least one behaviour) -----------------------
+    def coverage(self) -> np.ndarray:
+        """Boolean per frame: True if at least one behaviour event covers it."""
+        cov = np.zeros(self.n_frames, dtype=bool)
+        for e in self.events:
+            cov[max(0, e.start_frame): min(self.n_frames, e.end_frame + 1)] = True
+        return cov
+
+    def gaps(self) -> list[tuple[int, int]]:
+        """Inclusive [start, end] frame ranges that no behaviour covers yet, in time order."""
+        cov = self.coverage()
+        edges = np.flatnonzero(np.diff(np.r_[1, cov.astype(np.int8), 1]))  # starts/ends of False runs
+        return [(int(a), int(b) - 1) for a, b in zip(edges[::2], edges[1::2])]
+
+    def gap_at(self, frame: int) -> tuple[int, int] | None:
+        return next(((a, b) for a, b in self.gaps() if a <= frame <= b), None)
+
+    def coverage_summary(self) -> dict:
+        gaps = self.gaps()
+        lengths = [b - a + 1 for a, b in gaps]
+        return {"fraction": 1 - sum(lengths) / max(1, self.n_frames), "n_gaps": len(gaps),
+                "largest_gap_s": max(lengths, default=0) / self.fmap.proxy_fps, "complete": not gaps}
 
     def _on_load(self, ev: Event) -> None:
         if ev.behaviour not in self.categories:

@@ -80,7 +80,8 @@ side; nothing overwrites the other.
 | undo / save | **Ctrl+Z** / autosaves after every change (**Ctrl+S** to force) |
 | playback | **Space**, **←/→** (±1 frame), **Shift+←/→** (±1 s), timeline click/drag |
 | behaviour event (Behaviour tab) | **I** at first frame → **O** at last frame → pick behaviour (number key) + optional comment → OK |
-| edit / delete behaviour | click a row to jump, double-click to edit, *Delete* button |
+| edit / delete behaviour | click a row to jump, double-click to edit, *Delete* button; click a chunk on the timeline to select its row |
+| fill gaps (full segmentation) | **G** / **Shift+G** next/previous unlabelled gap (hatched), or click one → **B** → behaviour; panel shows % of frames labelled |
 | loop (Loops tab) | **I** where the loop starts → **O** when the fish is back at that spot (start frame shown picture-in-picture) → confidence, landmark, comment → OK |
 
 **Behaviour annotation.** The GUI also records frame-level behaviours (start frame, end frame,

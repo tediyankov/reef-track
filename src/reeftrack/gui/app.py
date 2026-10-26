@@ -161,6 +161,7 @@ class MainWindow(QMainWindow):
         self.view.clicked.connect(self._on_click)
         self.timeline = Timeline()
         self.timeline.seek.connect(self.goto)
+        self.timeline.lane_clicked.connect(self._on_lane_clicked)
 
         self.btn_prev10 = QPushButton("⏪")
         self.btn_prev = QPushButton("◀")
@@ -276,6 +277,9 @@ class MainWindow(QMainWindow):
         self.bpanel.btn_delete.clicked.connect(self.delete_behaviour)
         self.bpanel.btn_annotator.clicked.connect(lambda: self._ensure_annotator(force=True))
         self.bpanel.table.cellDoubleClicked.connect(lambda *_: self.edit_behaviour())
+        self.bpanel.selected.connect(lambda eid: self.timeline.set_highlight("behaviour", eid))
+        self.bpanel.btn_next_gap.clicked.connect(lambda: self.jump_gap(+1))
+        self.bpanel.btn_prev_gap.clicked.connect(lambda: self.jump_gap(-1))
 
         self.lpanel = LoopPanel()
         self.lpanel.seek.connect(self.goto)
@@ -287,6 +291,7 @@ class MainWindow(QMainWindow):
         self.lpanel.btn_delete.clicked.connect(self.delete_loop)
         self.lpanel.btn_annotator.clicked.connect(lambda: self._ensure_annotator(force=True))
         self.lpanel.table.cellDoubleClicked.connect(lambda *_: self.edit_loop())
+        self.lpanel.selected.connect(lambda eid: self.timeline.set_highlight("loops", eid))
 
         track_tab = QWidget()
         tv = QVBoxLayout(track_tab)
@@ -347,6 +352,7 @@ class MainWindow(QMainWindow):
             "End": lambda: self.goto(self.n - 1),
             "I": lambda: self._dispatch("in"), "O": lambda: self._dispatch("out"),
             "[": lambda: self._dispatch("in"), "]": lambda: self._dispatch("out"), "B": lambda: self._dispatch("add"),
+            "G": lambda: self.jump_gap(+1), "Shift+G": lambda: self.jump_gap(-1),
         }
         for k, fn in keys.items():
             QShortcut(QKeySequence(k), self, activated=fn)
@@ -569,7 +575,11 @@ class MainWindow(QMainWindow):
                 text = f"Loop {min(s, e)}–{max(s, e)} marked. Press <b>B</b> to save it."
         elif self.tabs.currentWidget() is self.bpanel:
             s, e = self.marks
-            if s is None:
+            gap = self.blog.gap_at(self.cur) if self.blog else None
+            if s is None and gap:
+                text = (f"No behaviour here yet (gap {gap[0]}–{gap[1]}). <b>Click the gap</b> on the timeline (or press "
+                        "<b>G</b>) and <b>B</b> to fill it, or mark a new behaviour with <b>I</b>/<b>O</b>.")
+            elif s is None:
                 text = "Behaviour: go to the <b>first</b> frame of a behaviour and press <b>I</b>."
             elif e is None:
                 text = (f"Start marked at frame {s}. Go to the <b>last</b> frame of the behaviour and press <b>O</b> "
@@ -901,7 +911,7 @@ class MainWindow(QMainWindow):
     def refresh_loops(self) -> None:
         if not self.loops:
             return
-        self.timeline.set_loops([(lp.start_frame, lp.end_frame, LOOP_COLOUR) for lp in self.loops.events],
+        self.timeline.set_loops([(lp.start_frame, lp.end_frame, LOOP_COLOUR, lp.event_id) for lp in self.loops.events],
                                 tuple(self.loop_marks))
         self.lpanel.set_loops([self.loops.row(lp) for lp in self.loops.sorted()],
                               str(self.loops.path.relative_to(self.run.root)))
@@ -1024,14 +1034,68 @@ class MainWindow(QMainWindow):
         self.worker.failed.connect(fail_hint)
         _ = CompressionBusy  # imported for clarity: raised by lib.compress
 
+    # ------------------------------------------------------------------ gaps & timeline clicks
+    def select_gap(self, gap: tuple[int, int]) -> None:
+        """Mark a whole unlabelled gap as the range to annotate (then B assigns a behaviour)."""
+        self.tabs.setCurrentWidget(self.bpanel)
+        self.marks = [gap[0], gap[1]]
+        self.refresh_behaviours()
+        self.render()
+        n = gap[1] - gap[0] + 1
+        self.statusBar().showMessage(f"Gap {gap[0]}–{gap[1]} selected ({n} frames, {n / self.fmap.proxy_fps:.1f} s). "
+                                     "Press B to assign a behaviour (you can adjust start/end in the window).")
+
+    def jump_gap(self, direction: int) -> None:
+        """G / Shift+G: go to the next / previous unlabelled gap and select it."""
+        if not self.blog:
+            return
+        gaps = self.blog.gaps()
+        if not gaps:
+            self.statusBar().showMessage("No gaps: every frame has a behaviour.", 5000)
+            return
+        here = self.blog.gap_at(self.cur)
+        if direction > 0:
+            if here and tuple(self.marks) != here:
+                target = here  # first G inside a gap selects that gap
+            else:
+                target = next((g for g in gaps if g[0] > self.cur), None)
+        else:
+            target = next((g for g in reversed(gaps) if g[1] < (here[0] if here else self.cur)), None)
+        if target is None:
+            self.statusBar().showMessage("No more gaps in that direction.", 4000)
+            return
+        self.goto(target[0])
+        self.select_gap(target)
+
+    def _on_lane_clicked(self, lane: str, frame: int, event_id, double: bool) -> None:
+        if lane == "behaviour" and self.blog:
+            self.tabs.setCurrentWidget(self.bpanel)
+            if event_id is not None:
+                self.bpanel.select_event(event_id)
+                if double:
+                    self.edit_behaviour()
+            else:
+                gap = self.blog.gap_at(frame)
+                if gap:
+                    self.select_gap(gap)
+                    if double:
+                        self.add_behaviour()
+        elif lane == "loops" and self.loops:
+            self.tabs.setCurrentWidget(self.lpanel)
+            if event_id is not None:
+                self.lpanel.select_event(event_id)
+                if double:
+                    self.edit_loop()
+
     def refresh_behaviours(self) -> None:
         if not self.blog:
             return
         cats = self.blog.categories
-        self.timeline.set_behaviours([(e.start_frame, e.end_frame, behaviour_colour(e.behaviour, cats))
-                                      for e in self.blog.events], tuple(self.marks))
+        self.timeline.set_behaviours([(e.start_frame, e.end_frame, behaviour_colour(e.behaviour, cats), e.event_id)
+                                      for e in self.blog.events], tuple(self.marks), gaps=self.blog.gaps())
         self.bpanel.set_events([self.blog.row(e) for e in self.blog.sorted()], cats,
                                str(self.blog.path.relative_to(self.run.root)))
+        self.bpanel.set_coverage(self.blog.coverage_summary())
         s, e = self.marks
         self.bpanel.range_label.setText("No range marked" if s is None else
                                         f"Start {s}" + ("" if e is None else f"  ·  End {e}  ({abs(e - s) + 1} frames)"))

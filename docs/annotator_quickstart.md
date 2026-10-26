@@ -44,6 +44,8 @@ You need the **video hard drive**, access to **RFS**, and about **5 GB free** on
    | play / pause | **Space** |
    | step one frame / one second | **←** **→** / **Shift+←** **Shift+→** |
    | mark a behaviour | **Behaviour** tab: **I** at its first frame, **O** at its last frame, pick the behaviour (or press its number), optional comment, **OK** |
+   | fill unlabelled gaps | **G** jumps to the next gap (hatched on the timeline) → **B** → pick behaviour; repeat until "✓ Every frame has a behaviour" |
+   | find an annotation | click its coloured chunk on the timeline → its row is highlighted |
    | mark a loop | **Loops** tab: **I** where the loop starts, **O** when the fish is back at that spot, **OK** |
    | fix a mistake | click the row in the table → **Edit…** or **Delete** |
 

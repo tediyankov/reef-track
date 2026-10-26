@@ -109,6 +109,7 @@ class EventPanel(QWidget):
     """Side panel shared by interval annotations: annotator, start/end marks, events table."""
 
     seek = Signal(int)
+    selected = Signal(object)  # event id of the selected row (or None)
 
     COLS: list[str] = []
     STRETCH_COL = -1  # column that takes the remaining width (comment)
@@ -148,6 +149,7 @@ class EventPanel(QWidget):
             self.table.setColumnWidth(c, wdt)
         hh.setSectionResizeMode(self.STRETCH_COL % len(self.COLS), QHeaderView.ResizeMode.Stretch)
         self.table.cellClicked.connect(lambda r, _c: self.seek.emit(self._start_of_row(r)))
+        self.table.itemSelectionChanged.connect(lambda: self.selected.emit(self.selected_event_id()))
         self.btn_edit = QPushButton("Edit…")
         self.btn_delete = QPushButton("Delete")
         self.btn_delete.setObjectName("danger")
@@ -183,6 +185,15 @@ class EventPanel(QWidget):
         rows = self.table.selectionModel().selectedRows()
         return int(self.table.item(rows[0].row(), 0).text()) if rows else None
 
+    def select_event(self, event_id) -> None:
+        """Highlight (and scroll to) the row of `event_id` (e.g. after clicking its chunk on the timeline)."""
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 0) and self.table.item(r, 0).text() == str(event_id):
+                self.table.selectRow(r)
+                self.table.scrollToItem(self.table.item(r, 0))
+                return
+        self.table.clearSelection()
+
     def _fill(self, table_rows: list[list], colours: list, path_text: str) -> None:
         """table_rows: cell values per row; colours: per row (col index, rgb) or None."""
         self.table.setRowCount(len(table_rows))
@@ -201,6 +212,31 @@ class BehaviourPanel(EventPanel):
     ELIDE_COLS = {1: 120}
     ADD_LABEL = "Add behaviour…  [B]"
     NOUN = "events"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # full segmentation: every frame should end up with a behaviour
+        self.coverage = QLabel("")
+        self.coverage.setWordWrap(True)
+        self.btn_prev_gap = QPushButton("◀ Prev gap  [Shift+G]")
+        self.btn_next_gap = QPushButton("Next gap ▶  [G]")
+        row = QHBoxLayout()
+        row.addWidget(self.btn_prev_gap)
+        row.addWidget(self.btn_next_gap)
+        lay = self.layout()
+        i = lay.indexOf(self.btn_add) + 1
+        lay.insertWidget(i, self.coverage)
+        lay.insertLayout(i + 1, row)
+
+    def set_coverage(self, summary: dict) -> None:
+        if summary["complete"]:
+            self.coverage.setText("✓ Every frame has a behaviour.")
+            self.coverage.setStyleSheet("color:#7ee08a; font-weight:600;")
+        else:
+            self.coverage.setText(f"Labelled {100 * summary['fraction']:.1f}% of frames · {summary['n_gaps']} gap"
+                                  f"{'s' if summary['n_gaps'] != 1 else ''} (largest {summary['largest_gap_s']:.1f} s, "
+                                  "hatched on the timeline). Click a gap, or press G, then B to fill it.")
+            self.coverage.setStyleSheet("color:#ff9d9d;")
 
     def set_events(self, rows: list[dict], categories: list[str], path_text: str) -> None:
         self._fill([[r["event_id"], r["behaviour"], r["start_frame"], r["end_frame"],

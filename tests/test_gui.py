@@ -286,3 +286,66 @@ def test_gui_library_annotation(tmp_path, monkeypatch):
     win.save()  # Ctrl+S once RFS is back
     assert win.save_banner.isHidden() and len(list(csv.DictReader(open(shared)))) == 2
     win.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg needed")
+def test_gui_gap_filling_and_timeline_selection(tmp_path, occlusion_video, monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    from reeftrack.gui import app as gui_app
+    from reeftrack.gui.behaviour_panel import BehaviourDialog
+
+    run = _synthetic_run(tmp_path, occlusion_video)  # 50 frames
+    pick = {"row": 11}  # Calm swimming
+    seen = {}
+
+    def fake_exec(self):
+        seen["range"] = (self.start.value(), self.end.value())
+        self.list.setCurrentRow(pick["row"])
+        return BehaviourDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(BehaviourDialog, "exec", fake_exec)
+    qapp = QApplication.instance() or QApplication([])
+    win = gui_app.MainWindow(behaviour_only=True)
+    win.annotator_name = "t"
+    win.open_run(run.root)
+    win.resize(1200, 800)
+    win.show()
+    qapp.processEvents()
+
+    # interval annotation first
+    win.goto(10)
+    win.mark_in()
+    win.goto(20)
+    win.mark_out()
+    assert win.blog.gaps() == [(0, 9), (21, 49)] and "2 gaps" in win.bpanel.coverage.text()
+
+    # G from frame 0 selects the gap we're in; B opens the dialog pre-filled with the whole gap
+    win.goto(0)
+    win.jump_gap(+1)
+    assert win.marks == [0, 9]
+    win._dispatch("add")
+    assert seen["range"] == (0, 9) and win.blog.gaps() == [(21, 49)]
+
+    # clicking the remaining gap selects it; double-clicking opens the dialog for it
+    pick["row"] = 13  # Out of view
+    win._on_lane_clicked("behaviour", 30, None, False)
+    assert win.marks == [21, 49]
+    win._on_lane_clicked("behaviour", 30, None, True)
+    assert seen["range"] == (21, 49) and win.blog.gaps() == []
+    assert "Every frame" in win.bpanel.coverage.text()
+
+    # a real mouse click on a coloured chunk highlights its row in the table (and the chunk)
+    qapp.processEvents()
+    win.timeline.repaint()
+    ltop, lh, rows, _ = win.timeline._layout["behaviour"]
+    first = next(r for r in rows if r[1] == 10)  # the original 10-20 event
+    QTest.mouseClick(win.timeline, Qt.MouseButton.LeftButton, pos=QPoint(int(win.timeline._x(15)), int(ltop + 2)))
+    qapp.processEvents()
+    assert win.bpanel.selected_event_id() == first[4]
+    assert win.timeline.highlight.get("behaviour") == first[4]
+    win.close()

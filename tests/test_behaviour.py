@@ -94,3 +94,20 @@ def test_unknown_category_in_old_csv_is_kept(blog, caplog):
     blog.path.write_text(text)
     again = BehaviourLog(blog.path, FM, "v", "run1", DEFAULT_BEHAVIOURS)
     assert again.events[0].behaviour == "Grazing" and "Grazing" in again.categories
+
+
+def test_gaps_and_coverage(tmp_path):
+    fm = FrameMap(start=0, stride=4, n_proxy=100, source_fps=120.0)  # 30 fps, 100 frames
+    b = BehaviourLog(tmp_path / "b.csv", fm, "v", "r", DEFAULT_BEHAVIOURS)
+    assert b.gaps() == [(0, 99)] and not b.coverage_summary()["complete"]
+    b.add("Foraging", 10, 30)
+    b.add("Calm swimming", 25, 50)  # overlaps the first: no gap between them
+    b.add("Stationary", 60, 60)  # single frame
+    assert b.gaps() == [(0, 9), (51, 59), (61, 99)]
+    assert b.gap_at(55) == (51, 59) and b.gap_at(20) is None and b.gap_at(0) == (0, 9)
+    s = b.coverage_summary()
+    assert s["n_gaps"] == 3 and s["fraction"] == pytest.approx(42 / 100)
+    assert s["largest_gap_s"] == pytest.approx(39 / 30)
+    for a, z in b.gaps():  # fill every gap -> fully segmented
+        b.add("Out of view", a, z)
+    assert b.gaps() == [] and b.coverage_summary()["complete"] and b.coverage().all()

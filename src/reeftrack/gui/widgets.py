@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QSizePolicy, QWidget
 
 from reeftrack.gui.overlay import segment_colour
@@ -57,6 +57,8 @@ class Timeline(QWidget):
     """Whole-clip overview: tracked segments (coloured), breaks (red), clicks (diamonds), playhead."""
 
     seek = Signal(int)
+    # (lane name, frame, event id under the cursor or None, double-click?) for clicks on annotation lanes
+    lane_clicked = Signal(str, int, object, bool)
 
     def __init__(self, n_frames: int = 1, parent=None):
         super().__init__(parent)
@@ -69,6 +71,9 @@ class Timeline(QWidget):
         # annotation lanes (drawn under the tracking bar, in this order): per lane a list of
         # (start, end, rgb) events and the (start, end) range currently being marked
         self.lanes: dict[str, list] = {"behaviour": [[], None], "loops": [[], None]}
+        self.lane_gaps: dict[str, list[tuple[int, int]]] = {}  # drawn hatched (frames still to label)
+        self.highlight: dict[str, object] = {}  # lane -> event id outlined (selected in the table)
+        self._layout: dict[str, tuple] = {}  # lane -> (top, height, stacked rows, n rows), from the last paint
         self.setMinimumHeight(96)
         self.setMouseTracking(True)
         self._hover: int | None = None
@@ -86,12 +91,19 @@ class Timeline(QWidget):
         if 0 <= frame < self.n:
             self.owner[frame] = segment_id
 
-    def set_lane(self, name: str, events, pending=None) -> None:
+    def set_lane(self, name: str, events, pending=None, gaps=None) -> None:
+        """events: (start, end, rgb[, event_id]) tuples; gaps: (start, end) ranges to show hatched."""
         self.lanes[name] = [events, pending]
+        if gaps is not None:
+            self.lane_gaps[name] = gaps
         self.update()
 
-    def set_behaviours(self, events, pending=None) -> None:
-        self.set_lane("behaviour", events, pending)
+    def set_highlight(self, name: str, event_id) -> None:
+        self.highlight[name] = event_id
+        self.update()
+
+    def set_behaviours(self, events, pending=None, gaps=None) -> None:
+        self.set_lane("behaviour", events, pending, gaps)
 
     def set_loops(self, events, pending=None) -> None:
         self.set_lane("loops", events, pending)
@@ -109,15 +121,17 @@ class Timeline(QWidget):
         """Assign overlapping events to rows (greedy), so co-occurring behaviours stay visible."""
         ends: list[int] = []
         rows = []
-        for s, e, c in sorted(events, key=lambda t: t[0]):
+        for ev in sorted(events, key=lambda t: t[0]):
+            s, e, c = ev[:3]
+            eid = ev[3] if len(ev) > 3 else None
             for r, last in enumerate(ends):
                 if s > last:
                     ends[r] = e
-                    rows.append((r, s, e, c))
+                    rows.append((r, s, e, c, eid))
                     break
             else:
                 ends.append(e)
-                rows.append((len(ends) - 1, s, e, c))
+                rows.append((len(ends) - 1, s, e, c, eid))
         return rows, max(1, len(ends))
 
     def set_pos(self, f: int) -> None:
@@ -142,11 +156,19 @@ class Timeline(QWidget):
             ltop = top + bh + 4 + li * lane
             lh = lane - 4
             p.fillRect(QRectF(8, ltop, w - 16, lh), QColor(28, 38, 46))
+            for gs, ge in self.lane_gaps.get(name, []):  # still-unlabelled frames: hatched
+                gx0, gx1 = self._x(gs), max(self._x(gs) + 2.0, self._x(ge + 1))
+                p.fillRect(QRectF(gx0, ltop, gx1 - gx0, lh), QBrush(QColor(255, 120, 120, 150), Qt.BrushStyle.BDiagPattern))
             rows, n_rows = self._stack(events)
+            self._layout[name] = (ltop, lh, rows, n_rows)
             rh = lh / n_rows
-            for r, s_, e_, c in rows:
+            for r, s_, e_, c, eid in rows:
                 x0, x1 = self._x(s_), max(self._x(s_) + 2.0, self._x(e_ + 1))
                 p.fillRect(QRectF(x0, ltop + r * rh, x1 - x0, rh - 1), QColor(*c))
+                if eid is not None and self.highlight.get(name) == eid:  # selected in the table
+                    p.setPen(QPen(QColor(255, 255, 255), 2))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawRect(QRectF(x0 - 1, ltop + r * rh - 1, x1 - x0 + 2, rh + 1))
                 if name == "loops":  # loops: emphasise start and return points
                     p.setPen(QPen(QColor(255, 255, 255), 2))
                     p.drawLine(QPointF(x0, ltop + r * rh), QPointF(x0, ltop + (r + 1) * rh - 1))
@@ -192,8 +214,28 @@ class Timeline(QWidget):
                        str(self._hover))
         p.end()
 
+    def _lane_hit(self, pos):
+        """(lane, frame, event id or None) under a mouse position, or None outside the lanes."""
+        f = self._f(pos.x())
+        for name, (ltop, lh, rows, n_rows) in self._layout.items():
+            if ltop - 2 <= pos.y() <= ltop + lh + 2:
+                r = int(np.clip((pos.y() - ltop) / (lh / n_rows), 0, n_rows - 1))
+                hit = [eid for (rr, s_, e_, _c, eid) in rows if rr == r and s_ <= f <= e_]
+                if not hit:  # thin rows: accept any event at this frame
+                    hit = [eid for (_rr, s_, e_, _c, eid) in rows if s_ <= f <= e_]
+                return name, f, (hit[0] if hit else None)
+        return None
+
     def mousePressEvent(self, e):  # noqa: N802
         self.seek.emit(self._f(e.position().x()))
+        hit = self._lane_hit(e.position())
+        if hit:
+            self.lane_clicked.emit(*hit, False)
+
+    def mouseDoubleClickEvent(self, e):  # noqa: N802
+        hit = self._lane_hit(e.position())
+        if hit:
+            self.lane_clicked.emit(*hit, True)
 
     def mouseMoveEvent(self, e):  # noqa: N802
         self._hover = self._f(e.position().x())
