@@ -1,0 +1,18 @@
+# Lightweight environment for ANNOTATORS (behaviour/loop labelling in the GUI).
+# ~1.7 GB (mostly the Qt GUI toolkit) instead of ~6 GB: no PyTorch / SAM / 3D libraries.
+# Installed automatically by scripts/annotator/install_mac.command or install_windows.bat.
+name: reeftrack-annotate
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - ffmpeg>=6            # video decoding + compression
+  - pip:
+      - numpy>=1.26,<2.3
+      - opencv-python-headless>=4.9
+      - pyside6-essentials>=6.7   # only QtCore/QtGui/QtWidgets (the full PySide6 adds ~0.2 GB more)
+      - pyyaml>=6
+      - pydantic>=2.7
+      - typer>=0.12
+      - tqdm

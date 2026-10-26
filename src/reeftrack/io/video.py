@@ -95,8 +95,37 @@ def plan_frame_map(info: VideoInfo, start: int, end: int | None, proxy_fps: floa
     return FrameMap(start=start, stride=stride, n_proxy=n_proxy, source_fps=info.fps_float)
 
 
+_ENCODERS: str | None = None
+
+
+def has_encoder(name: str) -> bool:
+    """Whether the ffmpeg on PATH was built with this encoder (checked once)."""
+    global _ENCODERS
+    if _ENCODERS is None:
+        r = subprocess.run([_require("ffmpeg"), "-hide_banner", "-encoders"], capture_output=True, text=True)
+        _ENCODERS = r.stdout
+    return f" {name} " in _ENCODERS
+
+
+def encoder_args(encoder: str = "libx264", crf: int = 18, bitrate: str = "10M") -> list[str]:
+    """ffmpeg video-encoder arguments.
+
+    * ``libx264``  high-quality software encode (research runs; slow, larger files)
+    * ``fast``     annotation copies: the Mac's hardware H.264 encoder (VideoToolbox) at a fixed
+                   bitrate, or a capped-bitrate x264 'veryfast' encode elsewhere. Either way the
+                   bottleneck is decoding the 4K/120 fps original, so this runs ~real time.
+    """
+    if encoder == "fast":
+        if sys.platform == "darwin" and has_encoder("h264_videotoolbox"):
+            return ["-c:v", "h264_videotoolbox", "-b:v", bitrate]
+        return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", bitrate,
+                "-bufsize", f"{2 * int(bitrate.rstrip('Mm'))}M"]
+    return ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf)]
+
+
 def build_proxy_command(
-    src: Path, dst: Path, fmap: FrameMap, height: int, rotate: int = 0, crf: int = 18, gop: int = 15
+    src: Path, dst: Path, fmap: FrameMap, height: int, rotate: int = 0, crf: int = 18, gop: int = 15,
+    encoder: str = "libx264", bitrate: str = "10M", progress: bool = False,
 ) -> list[str]:
     """ffmpeg command producing an exact, frame-accurate proxy.
 
@@ -118,19 +147,38 @@ def build_proxy_command(
     # Hardware HEVC decoding on macOS (VideoToolbox) is ~3-5x faster than software for 4K.
     hw = ["-hwaccel", "videotoolbox"] if sys.platform == "darwin" else []
     return [
-        _require("ffmpeg"), "-hide_banner", "-loglevel", "error", "-stats", "-y",
+        _require("ffmpeg"), "-hide_banner", "-loglevel", "error", *(["-nostats", "-progress", "pipe:1"]
+                                                                    if progress else ["-stats"]), "-y",
         *hw, "-i", str(src), "-an", "-sn", "-dn",
         "-vf", ",".join(filters), "-fps_mode", "cfr",
-        "-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-g", str(gop),
+        *encoder_args(encoder, crf, bitrate), "-g", str(gop),
         "-pix_fmt", "yuv420p", "-r", f"{rate.numerator}/{rate.denominator}",
         str(dst),
     ]
 
 
-def make_proxy(src: Path, dst: Path, fmap: FrameMap, height: int, rotate: int, crf: int, gop: int) -> VideoInfo:
+def make_proxy(src: Path, dst: Path, fmap: FrameMap, height: int, rotate: int, crf: int, gop: int,
+               encoder: str = "libx264", bitrate: str = "10M", progress=None, should_stop=None) -> VideoInfo:
+    """Encode the proxy to `dst`, verifying its frame count. `progress(done_frames, total)` is
+    called while encoding; `should_stop()` returning True aborts (partial file removed)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_suffix(".partial.mp4")
-    subprocess.run(build_proxy_command(src, tmp, fmap, height, rotate, crf, gop), check=True)
+    cmd = build_proxy_command(src, tmp, fmap, height, rotate, crf, gop, encoder, bitrate, progress is not None)
+    if progress is None:
+        subprocess.run(cmd, check=True)
+    else:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for line in proc.stdout:  # ffmpeg -progress emits key=value lines
+            if line.startswith("frame="):
+                progress(int(line.split("=", 1)[1] or 0), fmap.n_proxy)
+            if should_stop and should_stop():
+                proc.kill()
+                proc.wait()
+                tmp.unlink(missing_ok=True)
+                raise InterruptedError("compression cancelled")
+        if proc.wait() != 0:
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError(f"ffmpeg failed on {src}: {proc.stderr.read()[-500:]}")
     tmp.replace(dst)
     out = probe(dst)
     if out.n_frames != fmap.n_proxy:
@@ -186,3 +234,45 @@ class FrameReader:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+class RawFrameReader(FrameReader):
+    """Read the *original* video directly, as if it were a proxy: frame i = source frame
+    i * stride, downscaled to `max_height`. Lets the GUI work without a compressed copy
+    (slower: jumps re-decode from the previous keyframe of the 4K/120 fps original).
+    """
+
+    def __init__(self, path: str | Path, stride: int, max_height: int = 1080, cache_size: int = 64):
+        super().__init__(path, cache_size)
+        self.stride = stride
+        self.n_source = self.n_frames
+        self.n_frames = (self.n_source - 1) // stride + 1
+        self.max_height = max_height
+        self._next_src = 0
+
+    def __getitem__(self, idx: int) -> np.ndarray:
+        cv2 = self._cv2
+        if not 0 <= idx < self.n_frames:
+            raise IndexError(idx)
+        if idx in self._cache:
+            self._cache.move_to_end(idx)
+            return self._cache[idx]
+        src = idx * self.stride
+        if 0 <= src - self._next_src < 4 * self.stride:  # a little ahead: decode forward, no seek
+            for _ in range(src - self._next_src):
+                self._cap.grab()
+        else:
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, src)
+        ok, bgr = self._cap.read()
+        if not ok:
+            raise OSError(f"failed to decode source frame {src} of {self.path}")
+        self._next_src = src + 1
+        h, w = bgr.shape[:2]
+        if h > self.max_height:
+            bgr = cv2.resize(bgr, (int(w * self.max_height / h), self.max_height), interpolation=cv2.INTER_AREA)
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        self._cache[idx] = rgb
+        if len(self._cache) > self._cache_size:
+            self._cache.popitem(last=False)
+        self.width, self.height = rgb.shape[1], rgb.shape[0]
+        return rgb

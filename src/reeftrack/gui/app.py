@@ -125,10 +125,11 @@ class Worker(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, config_path: Path | None = None, behaviour_only: bool = False):
+    def __init__(self, config_path: Path | None = None, behaviour_only: bool = False, library: bool = False):
         super().__init__()
         self.config_path = config_path
-        self.behaviour_only = behaviour_only
+        self.library = library  # annotate videos from the shared library (hard drive + RFS)
+        self.behaviour_only = behaviour_only or library
         self.blog = None  # BehaviourLog of the open run
         self.marks: list[int | None] = [None, None]  # behaviour start / end being marked
         self.loops = None  # LoopLog of the open run
@@ -305,6 +306,11 @@ class MainWindow(QMainWindow):
         rv = QVBoxLayout(right)
         rv.addWidget(self.info)
         rv.addWidget(self.hint)
+        self.save_banner = QLabel()
+        self.save_banner.setWordWrap(True)
+        self.save_banner.setStyleSheet("background:#7c1f2a; color:white; padding:6px; border-radius:5px;")
+        self.save_banner.setVisible(False)
+        rv.addWidget(self.save_banner)
         rv.addWidget(self.tabs, 1)
         rv.addWidget(disp)
         right.setMinimumWidth(380)
@@ -318,13 +324,18 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(split)
 
         m = self.menuBar().addMenu("&File")
-        for text, slot, key in [("New run from video…", self.new_run, "Ctrl+N"), ("Open run…", self.open_run_dialog, "Ctrl+O"),
-                                ("Save tracklet", self.save, "Ctrl+S")]:
+        items = [("Open video from hard drive…", self.open_video_dialog, "Ctrl+O"),
+                 ("Library folders…", self.library_settings, "Ctrl+,"), ("Save", self.save, "Ctrl+S")]
+        if not self.library:
+            items = [("New run from video…", self.new_run, "Ctrl+N"), ("Open run…", self.open_run_dialog, "Ctrl+Shift+O"),
+                     *items]
+        for text, slot, key in items:
             a = QAction(text, self)
             a.setShortcut(QKeySequence(key))
             a.triggered.connect(slot)
             m.addAction(a)
-        self.statusBar().showMessage("File → Open run… or New run from video…")
+        self.statusBar().showMessage("File → Open video from hard drive…" if self.library else
+                                     "File → Open run…, New run from video… or Open video from hard drive…")
 
     def _build_shortcuts(self) -> None:
         keys = {
@@ -396,32 +407,37 @@ class MainWindow(QMainWindow):
         self._start_worker(lambda emit, stop: prepare_run(Path(path), start, end, name, cfg),
                            done=lambda run: (self.progress.setVisible(False), self.open_run(run.root)))
 
-    def open_run(self, root: Path) -> None:
+    def open_run(self, root) -> None:
+        """Open a run folder (Path) or a prepared Run (library videos)."""
         from reeftrack.io.run import Run
-        from reeftrack.io.video import FrameReader
+        from reeftrack.io.video import FrameReader, RawFrameReader
         from reeftrack.tracking.session import TrackingSession
 
         try:
-            self.run = Run.open(root)
+            self.run = root if isinstance(root, Run) else Run.open(root)
         except FileNotFoundError as e:
             QMessageBox.critical(self, "Not a run", str(e))
             return
+        root = self.run.root
         self.cfg = self.run.config(self.config_path)
         self.fmap = self.run.frame_map()
         if self.reader:
             self.reader.close()
-        self.reader = FrameReader(self.run.proxy)
-        self.session = TrackingSession.from_run(self.run, self.cfg)
-        from reeftrack.annotation.behaviour import BehaviourLog
+        self.reader = (RawFrameReader(self.run.proxy, self.fmap.stride) if self.run.video_is_raw
+                       else FrameReader(self.run.proxy))
+        if self.behaviour_only:  # no tracking model: don't import torch/transformers at all
+            from reeftrack.tracking.tracklet import Tracklet
 
-        self.blog = BehaviourLog.for_run(self.run, self.cfg.annotation.behaviours)
+            tracklet = Tracklet.load(self.run.tracking_dir) if (self.run.tracking_dir / "tracklet.json").exists() else None
+            self.session = TrackingSession(self.reader, self.cfg.tracking, tracklet, run=self.run)
+        else:
+            self.session = TrackingSession.from_run(self.run, self.cfg)
         if not self.annotator_name and self.cfg.annotation.annotator:
             self.annotator_name = self.cfg.annotation.annotator
-        self.marks = [None, None]
-        from reeftrack.annotation.loops import LoopLog
-
-        self.loops = LoopLog.for_run(self.run)
-        self.loop_marks = [None, None]
+        if self.run.is_library and not self._ensure_annotator():
+            QMessageBox.warning(self, "Name needed", "Annotations are saved per annotator, so a name is needed.")
+            return
+        self._load_logs()
         self.timeline.set_length(self.n)
         kf_path = self.run.recon_dir / "keyframes.json"
         if kf_path.exists():
@@ -430,10 +446,16 @@ class MainWindow(QMainWindow):
             self.timeline.keyframes = np.asarray(json.loads(kf_path.read_text())["keyframes"])
         self.frame_box.setRange(0, self.n - 1)
         meta = self.run.meta()
-        self.info.setText(f"<b>{self.run.root.name}</b><br>{Path(meta['source']['path']).name} · source frames "
-                          f"{meta['frames']['source_start']}–{meta['frames']['source_end']}<br>{self.n} frames @ "
-                          f"{self.fmap.proxy_fps:.2f} fps · tracker: {self.cfg.tracking.backend}")
-        self.setWindowTitle(f"reef-track — {self.run.root.name}")
+        if self.run.is_library:
+            src = "original video (slower)" if self.run.video_is_raw else "compressed copy"
+            self.info.setText(f"<b>{meta['source']['rel']}</b><br>{self.n} frames @ {self.fmap.proxy_fps:.2f} fps · "
+                              f"playing the {src}<br>saving to: {self.run.root}")
+            self.setWindowTitle(f"reef-track — {meta['source']['rel']}")
+        else:
+            self.info.setText(f"<b>{self.run.root.name}</b><br>{Path(meta['source']['path']).name} · source frames "
+                              f"{meta['frames']['source_start']}–{meta['frames']['source_end']}<br>{self.n} frames @ "
+                              f"{self.fmap.proxy_fps:.2f} fps · tracker: {self.cfg.tracking.backend}")
+            self.setWindowTitle(f"reef-track — {self.run.root.name}")
         self._set_enabled(True)
         self.refresh_tracklet()
         self.refresh_behaviours()
@@ -443,7 +465,8 @@ class MainWindow(QMainWindow):
         if self.behaviour_only:
             self.tabs.setCurrentWidget(self.bpanel)
             self.tabs.setTabEnabled(0, False)
-            self.info.setText(self.info.text().rsplit("· tracker:", 1)[0] + "· behaviour annotation only")
+            if not self.run.is_library:
+                self.info.setText(self.info.text().rsplit("· tracker:", 1)[0] + "· behaviour annotation only")
         else:
             self._warmup()
 
@@ -679,8 +702,14 @@ class MainWindow(QMainWindow):
         name, ok = QInputDialog.getText(self, "Annotator", "Your name or initials (saved with every event):",
                                         text=self.annotator_name)
         if ok and name.strip():
+            changed = name.strip() != self.annotator_name
             self.annotator_name = name.strip()
             self.settings.setValue("annotator", self.annotator_name)
+            if changed and self.run is not None and self.run.is_library and self.blog is not None:
+                self._load_logs()  # files are per annotator: switch to this person's files
+                self.refresh_behaviours()
+                self.refresh_loops()
+                self.render()
         self._update_active_label()
         return bool(self.annotator_name)
 
@@ -739,6 +768,7 @@ class MainWindow(QMainWindow):
         except ValueError as err:
             QMessageBox.warning(self, "Behaviour not saved", str(err))
             return
+        self._check_saved()
         self.refresh_behaviours()
         self.render()
         self.statusBar().showMessage(f"Saved event {ev.event_id}: {ev.behaviour} {ev.start_frame}–{ev.end_frame} "
@@ -763,6 +793,7 @@ class MainWindow(QMainWindow):
                 != QMessageBox.StandardButton.Yes:
             return
         self.blog.delete(eid)
+        self._check_saved()
         self.refresh_behaviours()
         self.render()
 
@@ -836,6 +867,7 @@ class MainWindow(QMainWindow):
         except ValueError as err:
             QMessageBox.warning(self, "Loop not saved", str(err))
             return
+        self._check_saved()
         self.refresh_loops()
         self.render()
         row = self.loops.row(lp)
@@ -862,6 +894,7 @@ class MainWindow(QMainWindow):
                 != QMessageBox.StandardButton.Yes:
             return
         self.loops.delete(lid)
+        self._check_saved()
         self.refresh_loops()
         self.render()
 
@@ -880,6 +913,116 @@ class MainWindow(QMainWindow):
         self.lpanel.count.setText(self.lpanel.count.text() + note)
         self._update_active_label()
         self._update_hint()
+
+    def _load_logs(self) -> None:
+        from reeftrack.annotation.behaviour import BehaviourLog
+        from reeftrack.annotation.loops import LoopLog
+
+        who = self.annotator_name if self.run.is_library else None
+        self.blog = BehaviourLog.for_run(self.run, self.cfg.annotation.behaviours, who)
+        self.loops = LoopLog.for_run(self.run, who)
+        self.marks = [None, None]
+        self.loop_marks = [None, None]
+        restored = [lg.path.name for lg in (self.blog, self.loops) if lg.restored_from_backup]
+        if restored:
+            QMessageBox.information(self, "Recovered", "Changes that hadn't reached RFS last time were recovered "
+                                    f"from this laptop's backup and saved: {', '.join(restored)}")
+        self._check_saved()
+
+    def _check_saved(self) -> None:
+        """Show a red banner while annotations can't be written to the shared folder."""
+        errs = [lg for lg in (self.blog, self.loops) if lg is not None and lg.last_save_error]
+        if errs:
+            self.save_banner.setText(
+                "⚠ Could not save to the shared folder (is RFS connected?). Your work is safe in a backup on "
+                f"this laptop ({errs[0].backup.parent}) and will be saved to RFS on your next change or Ctrl+S.")
+        self.save_banner.setVisible(bool(errs))
+
+    # ------------------------------------------------------------------ shared video library
+    def library_settings(self) -> bool:
+        from reeftrack.gui.library_ui import LibraryDialog
+        from reeftrack.library import LibrarySettings
+
+        dlg = LibraryDialog(LibrarySettings.load(), self)
+        return dlg.exec() == LibraryDialog.DialogCode.Accepted
+
+    def open_video_dialog(self) -> None:
+        from reeftrack.library import LibrarySettings
+
+        s = LibrarySettings.load()
+        if s.problems() and not self.library_settings():
+            return
+        s = LibrarySettings.load()
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a video to annotate", s.video_root,
+                                              "Videos (*.mp4 *.MP4 *.mov *.MOV)")
+        if path:
+            self.open_video(Path(path))
+
+    def open_video(self, video: Path, choice: str | None = None) -> None:
+        """Open an original video from the library: use (or make) its compressed copy."""
+        from reeftrack.library import CompressionBusy, Library, LibrarySettings
+
+        s = LibrarySettings.load()
+        probs = s.problems()
+        if probs:
+            QMessageBox.warning(self, "Library folders", "\n".join(probs) + "\n\nFile → Library folders… to fix.")
+            return
+        lib = Library(s)
+        try:
+            rel = lib.rel(video)
+            fmap = lib.frame_map_for(video)
+        except (ValueError, FileNotFoundError) as e:
+            QMessageBox.critical(self, "Can't use this video", str(e))
+            return
+        if not self.annotator_name and not self._ensure_annotator():
+            return
+        from reeftrack.config import load_config
+
+        cfg = load_config(self.config_path)
+        if lib.compressed_info(rel):
+            choice = "compressed"
+        elif choice is None:
+            from reeftrack.gui.library_ui import ask_no_compressed_copy
+
+            choice = ask_no_compressed_copy(self, str(rel), fmap.n_proxy / fmap.proxy_fps / 60 * 1.1)
+        if choice == "cancel":
+            return
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+
+        def report(what):
+            return lambda done, total: emit_box[0](f"{what}|{int(100 * done / max(total, 1))}")
+
+        emit_box = [lambda _x: None]
+
+        def job(emit, stop):
+            emit_box[0] = emit
+            if choice == "compress":
+                lib.compress(video, progress=report("Compressing (once, then shared on RFS)"), should_stop=stop)
+            return lib.open_run(video, cfg, use_original=(choice == "original"),
+                                progress=report("Copying compressed video to this laptop"))
+
+        def on_progress(msg):
+            what, pct = msg.rsplit("|", 1)
+            self.progress.setValue(int(pct))
+            self.statusBar().showMessage(f"{what}… {pct}%")
+
+        def done(run):
+            self.progress.setVisible(False)
+            self.open_run(run)
+
+        def fail_hint(msg):
+            if "already being compressed" in msg:
+                self.statusBar().showMessage("Someone else is compressing this video; open the original meanwhile.")
+
+        if self.worker and self.worker.isRunning():
+            self.statusBar().showMessage("Busy – wait for the current job or press Stop.")
+            return
+        self.statusBar().showMessage(f"Preparing {rel}…")
+        self._start_worker(job, done=done, progress=on_progress)
+        self.worker.failed.connect(fail_hint)
+        _ = CompressionBusy  # imported for clarity: raised by lib.compress
 
     def refresh_behaviours(self) -> None:
         if not self.blog:
@@ -919,9 +1062,16 @@ class MainWindow(QMainWindow):
                 self.render()
 
     def save(self) -> None:
-        if self.session and self.run:
+        if not self.run:
+            return
+        if self.session and self.session.tracklet.segments:
             self.session.save()
-            self.statusBar().showMessage(f"Saved → {self.run.tracking_dir}", 4000)
+        for lg in (self.blog, self.loops):
+            if lg is not None and lg.events:
+                lg.save()
+        self._check_saved()
+        if not self.save_banner.isVisible():
+            self.statusBar().showMessage(f"Saved → {self.run.root}", 4000)
 
     def _start_worker(self, fn, done=None, progress=None) -> None:
         if self.worker and self.worker.isRunning():
@@ -964,15 +1114,20 @@ def _dark_palette(app: QApplication) -> None:
     app.setStyleSheet(STYLE)
 
 
-def main(run_dir: Path | None = None, config: Path | None = None, behaviour_only: bool = False) -> None:
+def main(run_dir: Path | None = None, config: Path | None = None, behaviour_only: bool = False,
+         library: bool = False, video: Path | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s", datefmt="%H:%M:%S")
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("reef-track")
     _dark_palette(app)
-    win = MainWindow(config, behaviour_only=behaviour_only)
+    win = MainWindow(config, behaviour_only=behaviour_only, library=library)
     win.show()
     if run_dir:
         QTimer.singleShot(0, lambda: win.open_run(Path(run_dir)))
+    elif video:
+        QTimer.singleShot(0, lambda: win.open_video(Path(video)))
+    elif library:
+        QTimer.singleShot(0, win.open_video_dialog)
     sys.exit(app.exec())
 
 

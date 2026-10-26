@@ -28,7 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from reeftrack.annotation.events import Event, IntervalLog
+from reeftrack.annotation.events import Event, IntervalLog, _source_and_name, backup_path
 from reeftrack.io.video import FrameMap
 
 CONFIDENCE = ["certain", "probable", "possible"]
@@ -100,14 +100,14 @@ class LoopLog(IntervalLog):
     FILENAME = "loops.csv"
 
     def __init__(self, path: Path, fmap: FrameMap, source_video: str, run_name: str,
-                 trajectory: Trajectory | None = None, n_frames: int | None = None):
+                 trajectory: Trajectory | None = None, n_frames: int | None = None, backup: Path | None = None):
         self.trajectory = trajectory
-        super().__init__(path, fmap, source_video, run_name, n_frames)
+        super().__init__(path, fmap, source_video, run_name, n_frames, backup)
 
     @classmethod
-    def for_run(cls, run) -> LoopLog:
-        lg = cls(run.root / "annotations" / cls.FILENAME, run.frame_map(), run.meta()["source"]["path"],
-                 run.root.name, Trajectory.for_run(run))
+    def for_run(cls, run, annotator: str | None = None) -> LoopLog:
+        path = run.annotation_path("loops", annotator)
+        lg = cls(path, run.frame_map(), *_source_and_name(run), Trajectory.for_run(run), backup=backup_path(run, path))
         if lg.path.exists():
             lg.save()  # refresh the 3D columns against the latest trajectory
         return lg

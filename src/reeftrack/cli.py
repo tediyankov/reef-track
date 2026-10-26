@@ -59,6 +59,97 @@ def add_right(
 
 
 @app.command()
+def annotate(
+    video: Annotated[Path | None, typer.Argument(help="Original video (on the hard drive). Omit to pick one.")] = None,
+    config: ConfigOpt = None,
+) -> None:
+    """Annotate behaviours/loops on library videos (hard drive + RFS). The main command for annotators."""
+    from reeftrack.gui.app import main
+
+    main(None, config, behaviour_only=True, library=True, video=video)
+
+
+@app.command()
+def library() -> None:
+    """Show the library folders (set them in the GUI: File → Library folders) and check they're reachable."""
+    from reeftrack.library import LibrarySettings, settings_path
+
+    s = LibrarySettings.load()
+    typer.echo(f"settings file: {settings_path()}")
+    for k in ("video_root", "compressed_root", "annotations_root", "cache_dir"):
+        typer.echo(f"  {k:17s} {getattr(s, k) or '(not set)'}")
+    probs = s.problems()
+    typer.echo("OK" if not probs else "Problems:\n  - " + "\n  - ".join(probs))
+
+
+@app.command()
+def compress(videos: Annotated[list[Path], typer.Argument(help="Original video file(s).")]) -> None:
+    """Make the shared compressed copy of one or more original videos (skips ones already done)."""
+    _compress_many(videos)
+
+
+@app.command("compress-batch")
+def compress_batch(
+    folder: Annotated[Path, typer.Argument(help="Folder of originals, e.g. <drive>/originaldata/Maldives/2024_02_14")],
+    pattern: str = typer.Option("*.MP4", help="File pattern (case-insensitive)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only list what would be compressed, with an estimate."),
+) -> None:
+    """Compress every original video below FOLDER that has no shared compressed copy yet (e.g. overnight)."""
+    import fnmatch
+
+    vids = sorted(p for p in folder.rglob("*") if p.is_file() and not p.name.startswith("._")
+                  and fnmatch.fnmatch(p.name.lower(), pattern.lower()))
+    _compress_many(vids, dry_run)
+
+
+def _compress_many(videos: list[Path], dry_run: bool = False) -> None:
+    from reeftrack.library import CompressionBusy, Library
+
+    lib = Library()
+    probs = lib.s.problems()
+    if probs:
+        raise typer.BadParameter("; ".join(probs) + " (set folders with `reeftrack annotate` → File → Library folders)")
+    todo, minutes = [], 0.0
+    for v in videos:
+        try:
+            rel = lib.rel(v)
+            fm = lib.frame_map_for(v)
+        except (ValueError, FileNotFoundError) as e:
+            typer.echo(f"SKIP  {v}: {e}")
+            continue
+        if lib.compressed_info(rel):
+            typer.echo(f"done  {rel}")
+            continue
+        todo.append(v)
+        minutes += fm.n_proxy / fm.proxy_fps / 60 * 1.1
+        typer.echo(f"todo  {rel}  ({v.stat().st_size / 2**30:.1f} GB original)")
+    typer.echo(f"{len(todo)} to compress, roughly {minutes / 60:.1f} h on a recent Mac (~{1.4 * len(todo):.0f} GB on RFS)")
+    if dry_run:
+        return
+    from tqdm import tqdm
+
+    failed = []
+    for i, v in enumerate(todo, 1):
+        bar = tqdm(total=100, desc=f"[{i}/{len(todo)}] {v.name}", unit="%")
+        last = [0]
+
+        def prog(d, t, bar=bar, last=last):
+            pct = int(100 * d / max(t, 1))
+            bar.update(pct - last[0])
+            last[0] = pct
+
+        try:
+            lib.compress(v, progress=prog, log=lambda *_: None)
+        except (CompressionBusy, RuntimeError, OSError, ValueError) as e:
+            failed.append((v, e))
+        finally:
+            bar.close()
+    for v, e in failed:
+        typer.echo(f"FAILED {v}: {e}")
+    typer.echo(f"finished: {len(todo) - len(failed)} compressed, {len(failed)} failed")
+
+
+@app.command()
 def gui(run_dir: Annotated[Path | None, typer.Argument()] = None, config: ConfigOpt = None,
         behaviour_only: bool = typer.Option(False, "--behaviour-only",
                                             help="Behaviour annotation only: no SAM model is loaded (fast start).")) -> None:

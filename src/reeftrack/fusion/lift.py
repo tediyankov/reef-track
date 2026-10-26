@@ -184,7 +184,7 @@ def fuse(run, cfg) -> list[dict]:
         np.diff(np.stack([camera_center(E) for E in rec.extrinsic]), axis=0), axis=1).sum()), 4)
     (run.fusion_dir / "summary.json").write_text(json.dumps(summary, indent=1))
     write_scene(run, rows)
-    if (run.root / "annotations" / "loops.csv").exists():  # loop 3D metrics follow the new trajectory
+    if not run.is_library and (run.root / "annotations" / "loops.csv").exists():  # refresh loop 3D metrics
         from reeftrack.annotation.loops import LoopLog
 
         LoopLog.for_run(run)

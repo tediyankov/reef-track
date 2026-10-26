@@ -35,6 +35,14 @@ from reeftrack.config import REPO_ROOT, Config, drop_unknown_keys, load_config
 from reeftrack.io.video import FrameMap
 
 
+def slugify(name: str) -> str:
+    """Safe, readable file-name part: 'Anna Smith' -> 'anna_smith'."""
+    import re
+
+    s = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
+    return s or "anon"
+
+
 def _git_commit() -> str:
     try:
         return subprocess.run(
@@ -52,6 +60,10 @@ class Run:
     # "recon_stereo". Fusion outputs follow it ("fusion", "fusion_stereo"), so variants never
     # overwrite each other and can be compared side by side.
     recon_name: str = "recon"
+    # Library runs (one folder per source video on shared storage) keep no video inside the
+    # run folder: the GUI plays a compressed copy or the original, set here at open time.
+    video: Path | None = None
+    video_is_raw: bool = False  # True: `video` is the original (read with RawFrameReader)
 
     # ---- canonical paths -------------------------------------------------
     @property
@@ -64,7 +76,20 @@ class Run:
 
     @property
     def proxy(self) -> Path:
-        return self.root / "proxy.mp4"
+        return self.video if self.video is not None else self.root / "proxy.mp4"
+
+    @property
+    def is_library(self) -> bool:
+        return self.meta().get("layout") == "library"
+
+    def annotation_path(self, kind: str, annotator: str | None = None) -> Path:
+        """Where an annotation CSV lives. Library runs: one file per annotator in the run
+        folder (`behaviours_<name>.csv`), so annotators never overwrite each other."""
+        if self.is_library:
+            if not annotator:
+                raise ValueError("library runs need an annotator name (files are per annotator)")
+            return self.root / f"{kind}_{slugify(annotator)}.csv"
+        return self.root / "annotations" / f"{kind}.csv"
 
     @property
     def tracking_dir(self) -> Path:
@@ -84,7 +109,7 @@ class Run:
         return self.root / f"fusion{suffix}"
 
     def variant(self, recon_name: str) -> Run:
-        return Run(self.root, recon_name)
+        return Run(self.root, recon_name, self.video, self.video_is_raw)
 
     # ---- metadata --------------------------------------------------------
     def meta(self) -> dict[str, Any]:
@@ -121,9 +146,10 @@ class Run:
 
     # ---- creation --------------------------------------------------------
     @classmethod
-    def create(cls, root: Path, source: Path, fmap: FrameMap, cfg: Config, extra: dict | None = None) -> Run:
+    def create(cls, root: Path, source: Path, fmap: FrameMap, cfg: Config, extra: dict | None = None,
+               subdirs: bool = True) -> Run:
         root.mkdir(parents=True, exist_ok=True)
-        for sub in ("tracking", "recon", "fusion"):
+        for sub in ("tracking", "recon", "fusion") if subdirs else ():
             (root / sub).mkdir(exist_ok=True)
         meta = {
             "created": _dt.datetime.now().isoformat(timespec="seconds"),

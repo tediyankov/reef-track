@@ -27,7 +27,7 @@ eval "$(mamba shell hook --shell zsh)"                         # zsh (macOS defa
 mamba activate ~/envs/reef-track                                # or, without mamba: conda activate ~/envs/reef-track
 pip install -e . --no-deps
 bash scripts/fetch_wat3r.sh           # vendors Wat3R model code into third_party/ (pinned)
-pytest                                # ~90 tests, ~1 min, no weights or GPU needed
+pytest                                # ~105 tests, ~1-2 min, no weights or GPU needed
 ```
 
 Model weights download automatically into `~/.cache/huggingface` on first use (set `HF_HOME`
@@ -95,6 +95,50 @@ reeftrack gui data/runs/<run> --behaviour-only
 Categories are set in `configs/default.yaml` (`annotation.behaviours`). Annotator
 instructions: [docs/annotating_behaviour.md](docs/annotating_behaviour.md).
 
+## Annotating many videos from a hard drive (shared library)
+
+For behaviour/loop annotation of many original videos, with results on shared storage (RFS):
+
+```bash
+reeftrack annotate                       # GUI: File → Open video from hard drive…
+reeftrack library                        # show / check the configured folders
+reeftrack compress-batch "<drive>/originaldata/Maldives/2024_02_14" --dry-run   # what would be compressed
+reeftrack compress-batch "<drive>/originaldata/Maldives/2024_02_14"             # do it (e.g. overnight)
+```
+
+Three folders are set once per computer (GUI: *File → Library folders…*, stored in
+`~/.reeftrack/library.yaml`). The path of each original below `originaldata/` is mirrored:
+
+```
+<drive>/originaldata/Maldives/2024_02_14/AM/Cait/Left/GX010703.MP4             original (10-11 GB, read-only)
+RFS/.../fish_in_the_wild/compressed_videos/Maldives/.../Left/GX010703.mp4      1080p/30 fps copy (~1.4 GB), made once
+RFS/.../fish_in_the_wild/compressed_videos/Maldives/.../Left/GX010703.reeftrack.json   how it was made
+RFS/.../fish_in_the_wild/annotations/Maldives/.../Left/GX010703/run.yaml       video info + frame mapping
+RFS/.../fish_in_the_wild/annotations/Maldives/.../Left/GX010703/behaviours_<annotator>.csv
+RFS/.../fish_in_the_wild/annotations/Maldives/.../Left/GX010703/loops_<annotator>.csv
+```
+
+* **No video goes in the annotations folder.** The GUI plays a local copy of the compressed
+  video (`~/reeftrack_cache`, oldest deleted above 30 GB). Jumping around a video directly on
+  the network share takes 0.3-1.7 s per jump; locally it's instant.
+* **Compression is shared and verified:** about real time on a recent Mac (≈20 min per 20-min
+  GoPro chapter; the bottleneck is decoding 4K/120 fps from USB). Each copy is encoded locally,
+  its frame count is checked against the original, and only then is it copied to RFS. A lock
+  stops two people compressing the same video at once. Zero-byte or corrupt originals (common on
+  the old drives) are reported, not crashed on.
+* **Fallback:** *Open original* plays the 10-11 GB original directly (works, but jumps are slow).
+  Frame numbers are identical either way (frame *i* = original frame *i* × 4).
+* **One CSV per annotator**, so nobody overwrites anyone (and you can compare annotators).
+* **Safe on flaky networks:** every save also writes a backup in `~/.reeftrack/backups/`. If RFS
+  is unreachable the GUI shows a red warning, and the next save (or Ctrl+S, or reopening the
+  video) pushes the changes back.
+* **The hard drive is NTFS:** macOS can read it but not write to it. That's fine here, since
+  nothing is written to the drive.
+
+Annotators install a light environment (no PyTorch/SAM/3D, ~1.7 GB) with a double-clickable
+installer: `scripts/annotator/install_mac.command` or `install_windows.bat`
+(→ *Annotate fish videos* on the Desktop). See [docs/annotator_quickstart.md](docs/annotator_quickstart.md).
+
 ## Outputs (per run, in `data/runs/<run>/`)
 
 | file | what |
@@ -143,9 +187,11 @@ src/reeftrack/
   recon/            keyframes, Wat3R/VGGT wrapper, chunk stitching (Sim3), point-cloud cleaning
   fusion/           2D tracklet → 3D trajectory, HTML/PLY scene export
   gui/              PySide6 app (video canvas, timeline, live tracking, behaviour annotation)
-  annotation/       interval annotations: behaviours + loops (one CSV each per run)
+  annotation/       interval annotations: behaviours + loops (one CSV each per run / annotator)
+  library.py        shared video library: mirrored paths, verified compression, local cache
   cli.py            `reeftrack` command
 scripts/            fetch_wat3r.sh, jasmin/ SLURM jobs
 tests/              unit + synthetic end-to-end tests (no weights needed)
+scripts/annotator/  one-click installers + Desktop launcher for annotators (Mac/Windows)
 data/, third_party/ git-ignored (outputs, vendored code)
 ```

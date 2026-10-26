@@ -19,7 +19,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from reeftrack.annotation.events import FRAME_COLS, TAIL_COLS, Event, IntervalLog
+from reeftrack.annotation.events import (
+    FRAME_COLS,
+    TAIL_COLS,
+    Event,
+    IntervalLog,
+    _source_and_name,
+    backup_path,
+)
 from reeftrack.io.video import FrameMap
 
 log = logging.getLogger(__name__)
@@ -36,14 +43,14 @@ class BehaviourLog(IntervalLog):
     FILENAME = "behaviours.csv"
 
     def __init__(self, path: Path, fmap: FrameMap, source_video: str, run_name: str,
-                 categories: list[str], n_frames: int | None = None):
+                 categories: list[str], n_frames: int | None = None, backup: Path | None = None):
         self.categories = list(categories)
-        super().__init__(path, fmap, source_video, run_name, n_frames)
+        super().__init__(path, fmap, source_video, run_name, n_frames, backup)
 
     @classmethod
-    def for_run(cls, run, categories: list[str]) -> BehaviourLog:
-        return cls(run.root / "annotations" / cls.FILENAME, run.frame_map(), run.meta()["source"]["path"],
-                   run.root.name, categories)
+    def for_run(cls, run, categories: list[str], annotator: str | None = None) -> BehaviourLog:
+        path = run.annotation_path("behaviours", annotator)
+        return cls(path, run.frame_map(), *_source_and_name(run), categories, backup=backup_path(run, path))
 
     def validate_extra(self, data: dict) -> dict:
         b = data.get("behaviour", "")

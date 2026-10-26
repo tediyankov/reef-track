@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import csv
 import datetime as _dt
+import io
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,15 +60,32 @@ class IntervalLog:
     MIN_FRAMES = 1  # minimum number of (inclusive) frames an event must span
     FILENAME = "events.csv"
 
-    def __init__(self, path: Path, fmap: FrameMap, source_video: str, run_name: str, n_frames: int | None = None):
+    def __init__(self, path: Path, fmap: FrameMap, source_video: str, run_name: str, n_frames: int | None = None,
+                 backup: Path | None = None):
         self.path = Path(path)
         self.fmap = fmap
         self.source_video = source_video
         self.run_name = run_name
         self.n_frames = n_frames if n_frames is not None else fmap.n_proxy
         self.events: list[Event] = []
-        if self.path.exists():
-            self._load()
+        # Local safety copy (library runs on network storage): written on every save, before
+        # the shared file. If the network drops, nothing is lost; a newer backup is restored
+        # (and pushed back to the shared file) the next time the log is opened.
+        self.backup = Path(backup) if backup else None
+        self.last_save_error: str | None = None
+        self.restored_from_backup = False
+        src = self._newest_source()
+        if src is not None:
+            self._load(src)
+            if src == self.backup:
+                self.restored_from_backup = True
+                self.save()
+
+    def _newest_source(self) -> Path | None:
+        have = [p for p in (self.path, self.backup) if p is not None and p.exists()]
+        if not have:
+            return None
+        return max(have, key=lambda p: (p.stat().st_mtime, p == self.path))  # tie -> shared file
 
     @property
     def columns(self) -> list[str]:
@@ -145,18 +164,42 @@ class IntervalLog:
             "annotator": e.annotator, "created": e.created, "modified": e.modified,
         }
 
-    def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".csv.tmp")
-        with open(tmp, "w", newline="", encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=self.columns)
-            w.writeheader()
-            for e in self.sorted():
-                w.writerow(self.row(e))
-        tmp.replace(self.path)  # atomic: a crash never leaves a half-written CSV
+    def to_csv(self) -> str:
+        buf = io.StringIO(newline="")
+        w = csv.DictWriter(buf, fieldnames=self.columns)
+        w.writeheader()
+        for e in self.sorted():
+            w.writerow(self.row(e))
+        return buf.getvalue()
 
-    def _load(self) -> None:
-        with open(self.path, newline="", encoding="utf-8") as fh:
+    @staticmethod
+    def _atomic_write(path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w", newline="", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)  # atomic: a crash never leaves a half-written CSV
+
+    def save(self) -> bool:
+        """Write the CSV. Returns False (and sets `last_save_error`) if the shared file could
+        not be written; the local backup, if configured, still has every change."""
+        text = self.to_csv()
+        if self.backup is not None:
+            self._atomic_write(self.backup, text)
+        try:
+            self._atomic_write(self.path, text)
+        except OSError as e:
+            self.last_save_error = f"{type(e).__name__}: {e}"
+            log.warning("could not save %s (%s); backup kept at %s", self.path, e, self.backup)
+            return False
+        self.last_save_error = None
+        if self.backup is not None:  # equal timestamps -> the shared file counts as newest
+            st = self.path.stat()
+            os.utime(self.backup, (st.st_atime, st.st_mtime))
+        return True
+
+    def _load(self, source: Path | None = None) -> None:
+        with open(source or self.path, newline="", encoding="utf-8") as fh:
             for r in csv.DictReader(fh):
                 ev = Event(int(r[self.ID_COL]), int(r["start_frame"]), int(r["end_frame"]), r.get("comment", ""),
                            r.get("annotator", ""), r.get("created") or _now(), r.get("modified") or _now(),
@@ -166,3 +209,21 @@ class IntervalLog:
 
     def _on_load(self, ev: Event) -> None:
         pass
+
+
+def _source_and_name(run) -> tuple[str, str]:
+    """(source video to record, run name). Library runs record the path below the originals
+    folder (the same on every computer) rather than a machine-specific absolute path."""
+    meta = run.meta()
+    src = meta["source"]
+    return (src.get("rel") or src["path"]), (src.get("rel") or run.root.name)
+
+
+def backup_path(run, path: Path) -> Path | None:
+    """Local safety copy for annotation files on shared storage (library runs only)."""
+    meta = run.meta()
+    if meta.get("layout") != "library":
+        return None
+    base = Path(os.environ.get("REEFTRACK_HOME", Path.home() / ".reeftrack")) / "backups"
+    rel = Path(meta["source"]["rel"])
+    return base.joinpath(*rel.parent.parts, rel.stem, path.name)

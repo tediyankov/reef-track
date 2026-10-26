@@ -224,3 +224,63 @@ def test_gui_loop_annotation(tmp_path, occlusion_video, monkeypatch):
     win.delete_loop(confirm=False)
     assert list(csv.DictReader(open(run.root / "annotations" / "loops.csv"))) == []
     win.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg needed")
+def test_gui_library_annotation(tmp_path, monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import csv
+
+    from PySide6.QtWidgets import QApplication
+
+    from reeftrack.annotation import events
+    from reeftrack.gui import app as gui_app
+    from reeftrack.gui.behaviour_panel import BehaviourDialog
+    from reeftrack.library import Library, LibrarySettings
+    from tests.test_library import REL, _write_video
+
+    monkeypatch.setenv("REEFTRACK_HOME", str(tmp_path / "home"))
+    drive, rfs = tmp_path / "drive" / "originaldata", tmp_path / "RFS"
+    for d in (drive, rfs / "compressed_videos", rfs / "annotations"):
+        d.mkdir(parents=True)
+    LibrarySettings(video_root=str(drive), compressed_root=str(rfs / "compressed_videos"),
+                    annotations_root=str(rfs / "annotations"), cache_dir=str(tmp_path / "cache"),
+                    height=240, bitrate="2M").save()
+    video = drive / REL
+    _write_video(video)
+
+    monkeypatch.setattr(BehaviourDialog, "exec", lambda self: (self.list.setCurrentRow(1),
+                                                               BehaviourDialog.DialogCode.Accepted)[1])
+    qapp = QApplication.instance() or QApplication([])
+    win = gui_app.MainWindow(library=True)
+    win.annotator_name = "Anna"
+    win.open_video(video, choice="compress")  # compress -> copy to cache -> open, in the background
+    win.worker.wait(60000)
+    qapp.processEvents()
+    lib = Library()
+    rel = lib.rel(video)
+    assert win.run is not None and win.run.root == lib.annotation_dir(rel) and not win.run.video_is_raw
+    assert lib.compressed_info(rel) is not None
+    assert win.tabs.currentWidget() is win.bpanel and not win.tabs.isTabEnabled(0)
+
+    win.goto(2)
+    win.mark_in()
+    win.goto(8)
+    win.mark_out()
+    shared = win.run.root / "behaviours_anna.csv"
+    assert len(list(csv.DictReader(open(shared)))) == 1 and not win.save_banner.isVisible()
+
+    real = events.IntervalLog._atomic_write
+    monkeypatch.setattr(events.IntervalLog, "_atomic_write",
+                        staticmethod(lambda p, t: (_ for _ in ()).throw(OSError("Host is down")) if p == shared
+                                     else real(p, t)))
+    win.goto(12)
+    win.mark_in()
+    win.goto(14)
+    win.mark_out()
+    assert not win.save_banner.isHidden()  # red warning while RFS is unreachable
+    monkeypatch.setattr(events.IntervalLog, "_atomic_write", staticmethod(real))
+    win.save()  # Ctrl+S once RFS is back
+    assert win.save_banner.isHidden() and len(list(csv.DictReader(open(shared)))) == 2
+    win.close()
