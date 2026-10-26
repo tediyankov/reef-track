@@ -104,16 +104,18 @@ def test_gui_behaviour_annotation(tmp_path, occlusion_video, monkeypatch):
     run = _synthetic_run(tmp_path, occlusion_video)
     qapp = QApplication.instance() or QApplication([])
 
-    # the dialog itself: OK only once a behaviour is chosen
-    d = BehaviourDialog(["Calm Swimming", "Foraging"], 3, 9, 50, 30.0)
+    # the dialog itself: OK only once a behaviour is chosen; shows the ethogram definition
+    d = BehaviourDialog(["Calm swimming", "Foraging"], 3, 9, 50, 30.0,
+                        definitions={"Foraging": "Fish approaches the substrate head-first."})
     ok = d.buttons.button(d.buttons.StandardButton.Ok)
     assert not ok.isEnabled()
     d.list.setCurrentRow(1)
     d.comment.setPlainText("nibbling algae")
     assert ok.isEnabled() and d.values() == ("Foraging", 3, 9, "nibbling algae")
+    assert "head-first" in d.definition.text()
 
     # simulate the user picking a behaviour in the modal dialog
-    choice = {"row": 1, "comment": "near bommie, 2nd fish visible"}
+    choice = {"row": 0, "comment": "near bommie, 2nd fish visible"}  # row 0 = Foraging
 
     def fake_exec(self):
         self.list.setCurrentRow(choice["row"])
@@ -142,17 +144,17 @@ def test_gui_behaviour_annotation(tmp_path, occlusion_video, monkeypatch):
     assert r["source_video"].endswith("clip.mp4") and win.marks == [None, None]
 
     # overlapping second event, marked backwards (end before start)
-    choice.update(row=0, comment="")
+    choice.update(row=11, comment="")  # row 11 = Calm swimming
     win.goto(20)
     win.mark_in()
     win.goto(10)
     win.mark_out()
-    assert [e.behaviour for e in win.blog.active_at(12)] == ["Foraging", "Calm Swimming"]
+    assert [e.behaviour for e in win.blog.active_at(12)] == ["Foraging", "Calm swimming"]
     assert len(win.timeline.behaviours) == 2 and win.bpanel.table.rowCount() == 2
 
     # edit + delete through the table
     win.bpanel.table.selectRow(0)
-    choice.update(row=1, comment="edited")
+    choice.update(row=0, comment="edited")
     win.edit_behaviour()
     win.bpanel.table.selectRow(1)
     win.delete_behaviour(confirm=False)

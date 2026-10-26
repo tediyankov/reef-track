@@ -139,6 +139,9 @@ class Run:
         snapshot = None
         if self.config_path.exists():
             snapshot = yaml.safe_load(self.config_path.read_text()) or {}
+            # The behaviour vocabulary is project-wide, not part of a run's provenance: always use
+            # the current list, so runs created before an ethogram update get the new categories.
+            snapshot.pop("annotation", None)
             dropped = drop_unknown_keys(snapshot)
             if dropped:
                 logging.getLogger(__name__).warning("ignoring obsolete config keys in %s: %s", self.config_path, dropped)

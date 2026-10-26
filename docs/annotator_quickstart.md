@@ -7,8 +7,12 @@ You need the **video hard drive**, access to **RFS**, and about **5 GB free** on
 1. **Get the tool.** On the reef-track GitHub page click **Code → Download ZIP**, then unzip it
    into your **Documents** folder. Don't put it on a cloud-synced folder (OneDrive, iCloud, Dropbox).
 2. **Install it.**
-   - **Mac:** open the unzipped folder → `scripts` → `annotator`, **right-click**
-     `install_mac.command` → **Open** → **Open**. A window shows progress; wait for "Done".
+   - **Mac:** macOS blocks double-clicking downloaded scripts ("can't check it for malware";
+     click **Done**, not *Move to Trash*). Run it from Terminal instead:
+     open **Terminal** (Cmd+Space, type *Terminal*, Enter), type `bash ` (with a space), drag
+     `install_mac.command` (unzipped folder → `scripts` → `annotator`) into the Terminal window,
+     and press **Enter**. Wait for "Done".
+     *(Alternative: after the warning, System Settings → Privacy & Security → **Open Anyway**.)*
    - **Windows:** open the unzipped folder → `scripts` → `annotator`, double-click
      `install_windows.bat`. If Windows warns you, choose **More info → Run anyway**. Wait for "Done".
 

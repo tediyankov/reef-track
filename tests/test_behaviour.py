@@ -17,10 +17,28 @@ def blog(tmp_path):
                         DEFAULT_BEHAVIOURS)
 
 
-def test_categories_match_figure_order():
+def test_categories_match_ethogram():
     assert load_config().annotation.behaviours == DEFAULT_BEHAVIOURS
-    assert DEFAULT_BEHAVIOURS[0] == "Calm Swimming" and DEFAULT_BEHAVIOURS[-1] == "Scratching"
-    assert len(DEFAULT_BEHAVIOURS) == 12
+    assert DEFAULT_BEHAVIOURS == [
+        "Foraging", "Near other Picasso triggerfish", "Chasing", "Escaping", "Fighting", "Cleaner fish interaction",
+        "Scratching", "Housekeeping", "Sheltering", "Stationary", "Erratic swimming", "Calm swimming", "Other",
+        "Out of view", "Calib"]
+    defs = load_config().annotation.definitions
+    assert set(defs) == set(DEFAULT_BEHAVIOURS) and all(defs.values())
+
+
+def test_old_run_snapshot_gets_current_categories(tmp_path):
+    import yaml
+
+    from reeftrack.io.run import Run
+
+    cfg = load_config()
+    Run.create(tmp_path / "r", tmp_path / "v.mp4", FM, cfg)
+    run = Run.open(tmp_path / "r")
+    snap = yaml.safe_load(run.config_path.read_text())
+    snap["annotation"]["behaviours"] = ["Calm Swimming", "Foraging"]  # list saved before the ethogram update
+    run.config_path.write_text(yaml.safe_dump(snap))
+    assert run.config().annotation.behaviours == DEFAULT_BEHAVIOURS
 
 
 def test_add_writes_row_with_source_frames_and_times(blog):
@@ -58,7 +76,7 @@ def test_roundtrip_with_awkward_comments(blog):
 
 def test_overlaps_update_delete(blog):
     a = blog.add("Foraging", 10, 30)
-    b = blog.add("Near Other Picasso triggerfish", 20, 40)
+    b = blog.add("Near other Picasso triggerfish", 20, 40)
     assert [e.event_id for e in blog.active_at(25)] == [a.event_id, b.event_id]
     assert blog.active_at(35) == [b]
     blog.update(a.event_id, behaviour="Chasing", end_frame=12, comment="short burst")

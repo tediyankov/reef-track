@@ -739,7 +739,7 @@ class MainWindow(QMainWindow):
 
     def _dialog(self, start, end, behaviour=None, comment="", title="New behaviour event"):
         return BehaviourDialog(self.blog.categories, start, end, self.n, self.fmap.proxy_fps, behaviour, comment,
-                               title, self)
+                               title, self, definitions=self.cfg.annotation.definitions)
 
     def add_behaviour(self) -> None:
         if not self.blog:

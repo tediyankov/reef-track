@@ -54,20 +54,24 @@ def draw_marker(frame: np.ndarray, xy, colour, size: int = 14) -> np.ndarray:
     return out
 
 
-# 12 well-separated colours for behaviour categories (in category order).
+# Well-separated colours for behaviour categories (in category order; see config.DEFAULT_BEHAVIOURS).
 BEHAVIOUR_PALETTE = [
-    (102, 194, 255),  # light blue
-    (60, 220, 90),  # green
-    (255, 105, 180),  # pink
-    (205, 133, 63),  # brown
-    (190, 190, 190),  # grey
-    (255, 215, 0),  # gold
-    (255, 69, 0),  # orange-red
-    (148, 103, 255),  # purple
-    (0, 206, 209),  # turquoise
-    (220, 20, 60),  # crimson
-    (154, 205, 50),  # yellow-green
-    (255, 160, 122),  # salmon
+    (60, 220, 90),  # Foraging - green
+    (255, 105, 180),  # Near other Picasso triggerfish - pink
+    (255, 69, 0),  # Chasing - orange-red
+    (0, 206, 209),  # Escaping - turquoise
+    (220, 20, 60),  # Fighting - crimson
+    (255, 215, 0),  # Cleaner fish interaction - gold
+    (255, 160, 122),  # Scratching - salmon
+    (154, 205, 50),  # Housekeeping - yellow-green
+    (205, 133, 63),  # Sheltering - brown
+    (148, 103, 255),  # Stationary - purple
+    (255, 140, 0),  # Erratic swimming - orange
+    (102, 194, 255),  # Calm swimming - light blue
+    (180, 180, 180),  # Other - grey
+    (140, 160, 180),  # Out of view - slate
+    (245, 245, 245),  # Calib - white
+    (0, 128, 128),  # (spare) teal
 ]
 
 

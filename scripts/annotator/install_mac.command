@@ -1,6 +1,8 @@
 #!/bin/bash
-# One-time setup of the reef-track annotation tool on a Mac. Double-click this file
-# (first time: right-click -> Open, because it was downloaded from the internet).
+# One-time setup of the reef-track annotation tool on a Mac. Run it from Terminal:
+#     bash <drag this file here>
+# (macOS blocks double-clicking downloaded scripts; alternatively, after the warning use
+#  System Settings -> Privacy & Security -> Open Anyway.)
 #
 # What it does (safe to run again, e.g. after downloading a newer version of reef-track):
 #   1. installs Miniforge (a small Python distribution) in ~/miniforge3 if no conda/mamba is found

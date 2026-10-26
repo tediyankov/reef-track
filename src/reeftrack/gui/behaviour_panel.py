@@ -26,15 +26,17 @@ from PySide6.QtWidgets import (
 from reeftrack.gui.overlay import behaviour_colour
 
 # keys shown next to categories; QListWidget type-ahead selects the item starting with that key
-KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "="]
+KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "A", "B", "C", "D", "E", "F", "G", "H"]
 
 
 class BehaviourDialog(QDialog):
     """Pick a behaviour (required), adjust start/end, write an optional comment."""
 
     def __init__(self, categories: list[str], start: int, end: int, n_frames: int, fps: float,
-                 behaviour: str | None = None, comment: str = "", title: str = "New behaviour event", parent=None):
+                 behaviour: str | None = None, comment: str = "", title: str = "New behaviour event", parent=None,
+                 definitions: dict[str, str] | None = None):
         super().__init__(parent)
+        self.definitions = definitions or {}
         self.setWindowTitle(title)
         self.setMinimumWidth(420)
         self.categories = categories
@@ -46,10 +48,16 @@ class BehaviourDialog(QDialog):
             it = QListWidgetItem(f"{key}   {c}")
             it.setData(Qt.ItemDataRole.UserRole, c)
             it.setForeground(QColor(*behaviour_colour(c, categories)))
+            if c in self.definitions:
+                it.setToolTip(self.definitions[c])
             self.list.addItem(it)
             if c == behaviour:
                 self.list.setCurrentItem(it)
-        self.list.setMinimumHeight(24 * min(len(categories), 12) + 8)
+        self.list.setMinimumHeight(24 * min(len(categories), 16) + 8)
+        self.definition = QLabel("")  # ethogram definition of the highlighted behaviour
+        self.definition.setWordWrap(True)
+        self.definition.setStyleSheet("color:#ffd479; padding:4px;")
+        self.definition.setMinimumHeight(48)
 
         self.start = QSpinBox()
         self.end = QSpinBox()
@@ -75,6 +83,7 @@ class BehaviourDialog(QDialog):
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel("<b>Behaviour</b> (click, or press its key):"))
         lay.addWidget(self.list)
+        lay.addWidget(self.definition)
         lay.addLayout(form)
         lay.addWidget(QLabel("Comment"))
         lay.addWidget(self.comment)
@@ -85,7 +94,10 @@ class BehaviourDialog(QDialog):
     def _update(self, *_) -> None:
         s, e = sorted((self.start.value(), self.end.value()))
         self.duration.setText(f"{e - s + 1} frames · {(e - s + 1) / self.fps:.2f} s")
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(self.list.currentItem() is not None)
+        it = self.list.currentItem()
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(it is not None)
+        name = it.data(Qt.ItemDataRole.UserRole) if it else None
+        self.definition.setText(self.definitions.get(name, "") if name else "Pick a behaviour to see its definition.")
 
     def values(self) -> tuple[str, int, int, str]:
         it = self.list.currentItem()

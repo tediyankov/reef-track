@@ -64,19 +64,24 @@ fusion:
   smooth_window: 5              # median filter (in keyframes) on the 3D trajectory
 
 annotation:
-  # Behaviour categories offered in the GUI (order = number keys 1-9, 0, -, =).
+  # Behaviour categories offered in the GUI, from the ethogram (order = keys 1-9, 0, A-E).
+  # Definitions shown in the GUI live in reeftrack/config.py (BEHAVIOUR_DEFINITIONS) and can be
+  # overridden here with `definitions: {name: text}`.
   # Changing this list never breaks old CSVs: unknown categories are kept and flagged.
   behaviours:
-    - Calm Swimming
     - Foraging
-    - Near Other Picasso triggerfish
-    - Sheltering
-    - Stationary
-    - Cleaner fish interaction
+    - Near other Picasso triggerfish
     - Chasing
-    - Erratic Swimming
     - Escaping
     - Fighting
-    - Housekeeping
+    - Cleaner fish interaction
     - Scratching
+    - Housekeeping
+    - Sheltering
+    - Stationary
+    - Erratic swimming
+    - Calm swimming
+    - Other
+    - Out of view
+    - Calib
   annotator: ""                 # optional; otherwise the GUI asks once and remembers it

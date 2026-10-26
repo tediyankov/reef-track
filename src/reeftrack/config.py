@@ -83,15 +83,36 @@ class FusionConfig(_Strict):
     smooth_window: int = 5
 
 
-DEFAULT_BEHAVIOURS = [
-    "Calm Swimming", "Foraging", "Near Other Picasso triggerfish", "Sheltering", "Stationary",
-    "Cleaner fish interaction", "Chasing", "Erratic Swimming", "Escaping", "Fighting",
-    "Housekeeping", "Scratching",
-]
+# Ethogram (order = the reference sheet; GUI keys 1-9, 0, A-E in this order) + "Calib".
+BEHAVIOUR_DEFINITIONS = {
+    "Foraging": "Fish approaches the substrate head-first. It makes rapid contact with the substrate with its "
+                "mouth open followed by a rebound movement in the opposite direction.",
+    "Near other Picasso triggerfish": "More than one Picasso triggerfish is visible in the frame of view.",
+    "Chasing": "Fish accelerates towards a second individual, causing it to move away.",
+    "Escaping": "Fish moves away in response to a second individual accelerating towards it.",
+    "Fighting": "Fish accelerates towards a second individual, resulting in direct contact, typically head-to-head.",
+    "Cleaner fish interaction": "Fish remains stationary, posing with its pectoral fins outstretched. A smaller "
+                                "fish moves around its body, intermittently biting it.",
+    "Scratching": "Fish rubs the side of its body against a rock.",
+    "Housekeeping": "Fish uses its mouth to manipulate substrate. This may include picking up and relocating "
+                    "debris, seagrass, or small rocks.",
+    "Sheltering": "Fish enters hole or crevice in a substrate, usually coral. Classify as sheltering once the fish "
+                  "is fully underneath the top.",
+    "Stationary": "Fish stays in the same place for more than three seconds. Usually occurs near a shelter.",
+    "Erratic swimming": "Fish exhibits fast bursts of movement. Often includes abrupt changes in direction, "
+                        "C-shaped body movements, and rolling onto one side.",
+    "Calm swimming": "Fish moves continuously through the water.",
+    "Other": "Behaviours that do not fit neatly into other categories. Keep a note when these occur "
+             "(for example: fish attacks camera).",
+    "Out of view": "Fish is not visible in the frame of view.",
+    "Calib": "Calibration footage (e.g. calibration target / rig set-up), not fish behaviour.",
+}
+DEFAULT_BEHAVIOURS = list(BEHAVIOUR_DEFINITIONS)
 
 
 class AnnotationConfig(_Strict):
     behaviours: list[str] = Field(default_factory=lambda: list(DEFAULT_BEHAVIOURS))
+    definitions: dict[str, str] = Field(default_factory=lambda: dict(BEHAVIOUR_DEFINITIONS))
     annotator: str = ""  # pre-fill the annotator name (else asked once and remembered per computer)
 
 

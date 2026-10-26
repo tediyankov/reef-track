@@ -26,12 +26,16 @@ follow the right individual. You can't change the outline in this mode.
 
    | key | behaviour | key | behaviour |
    |---|---|---|---|
-   | 1 | Calm Swimming | 7 | Chasing |
-   | 2 | Foraging | 8 | Erratic Swimming |
-   | 3 | Near Other Picasso triggerfish | 9 | Escaping |
-   | 4 | Sheltering | 0 | Fighting |
-   | 5 | Stationary | - | Housekeeping |
-   | 6 | Cleaner fish interaction | = | Scratching |
+   | 1 | Foraging | 9 | Sheltering |
+   | 2 | Near other Picasso triggerfish | 0 | Stationary |
+   | 3 | Chasing | A | Erratic swimming |
+   | 4 | Escaping | B | Calm swimming |
+   | 5 | Fighting | C | Other (add a comment!) |
+   | 6 | Cleaner fish interaction | D | Out of view |
+   | 7 | Scratching | E | Calib |
+   | 8 | Housekeeping | | |
+
+   The definition of the highlighted behaviour (from the ethogram) is shown in the window.
 
 5. Optionally write a **comment** (uncertainty, other fish involved, why it ended…), then **OK**.
 
