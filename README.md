@@ -79,9 +79,10 @@ side; nothing overwrites the other.
 | tracker drifted | click the fish on the bad frame → that segment is cut there and re-tracked |
 | undo / save | **Ctrl+Z** / autosaves after every change (**Ctrl+S** to force) |
 | playback | **Space**, **←/→** (±1 frame), **Shift+←/→** (±1 s), timeline click/drag |
+| rotate view (portrait videos) | **R** / **Shift+R** (View menu); display only, saved per video in `run.yaml` (`view.rotation`) |
 | behaviour event (Behaviour tab) | **I** at first frame → **O** at last frame → pick behaviour (number key) + optional comment → OK |
 | edit / delete behaviour | click a row to jump, double-click to edit, *Delete* button; click a chunk on the timeline to select its row |
-| fill gaps (full segmentation) | **G** / **Shift+G** next/previous unlabelled gap (hatched), or click one → **B** → behaviour; panel shows % of frames labelled |
+| fill gaps (full segmentation) | **G** / **Shift+G** next/previous unlabelled gap (hatched), or tick *Gap-fill mode* and click one → **B** → behaviour (off by default, so timeline clicks only navigate); panel shows % of frames labelled |
 | loop (Loops tab) | **I** where the loop starts → **O** when the fish is back at that spot (start frame shown picture-in-picture) → confidence, landmark, comment → OK |
 
 **Behaviour annotation.** The GUI also records frame-level behaviours (start frame, end frame,
@@ -135,6 +136,16 @@ RFS/.../fish_in_the_wild/annotations/Maldives/.../Left/GX010703/loops_<annotator
   video) pushes the changes back.
 * **The hard drive is NTFS:** macOS can read it but not write to it. That's fine here, since
   nothing is written to the drive.
+
+**Offline annotators (no RFS / hard drive):** send them the compressed `.mp4` *and* its
+`.reeftrack.json`. They set only the *Annotations* folder (a local folder) and use
+*File → Open compressed video…*. The info file gives the original's path, so their folders match
+the RFS layout exactly. Merge later, without ever overwriting a newer file:
+
+```bash
+reeftrack sync-annotations "<her annotations folder>" "/Volumes/RFS/Triggerfish Navigation/fish_in_the_wild/annotations" --dry-run
+reeftrack sync-annotations "<her annotations folder>" "/Volumes/RFS/Triggerfish Navigation/fish_in_the_wild/annotations"
+```
 
 Annotators install a light environment (no PyTorch/SAM/3D, ~1.7 GB) with a double-clickable
 installer: `scripts/annotator/install_mac.command` or `install_windows.bat`

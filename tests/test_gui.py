@@ -342,7 +342,17 @@ def test_gui_gap_filling_and_timeline_selection(tmp_path, occlusion_video, monke
     win._dispatch("add")
     assert seen["range"] == (0, 9) and win.blog.gaps() == [(21, 49)]
 
-    # clicking the remaining gap selects it; double-clicking opens the dialog for it
+    # gap-fill mode off (default): clicking a gap only navigates, it never replaces an open start mark
+    win.goto(25)
+    win.mark_in()
+    win._on_lane_clicked("behaviour", 30, None, False)
+    assert win.marks == [25, None]
+    win.bpanel.gap_mode.setChecked(True)
+    win._on_lane_clicked("behaviour", 30, None, False)
+    assert win.marks == [25, None]  # still protected while the range is open
+    win.clear_marks()
+
+    # gap-fill mode on: clicking the remaining gap selects it; double-clicking opens the dialog for it
     pick["row"] = 13  # Out of view
     win._on_lane_clicked("behaviour", 30, None, False)
     assert win.marks == [21, 49]

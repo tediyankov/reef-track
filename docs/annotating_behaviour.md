@@ -20,6 +20,8 @@ follow the right individual. You can't change the outline in this mode.
 ## Mark an event
 
 1. Play the video (**Space**) or step through it (**←/→** one frame, **Shift+←/→** one second).
+   If the video is sideways (filmed in portrait), press **R** to turn it clockwise (**Shift+R**
+   anticlockwise). This only changes the display and is remembered for that video.
 2. At the **first** frame of a behaviour, press **I** (or click *Start [I]*).
 3. Move to the **last** frame of that behaviour and press **O** (or click *End [O]*).
 4. A window opens. Pick the behaviour by clicking it or pressing its key:
@@ -58,9 +60,13 @@ The goal is a **complete** record: every frame of the video belongs to at least 
 2. Then fill what's left. Frames with no behaviour yet show as **hatched** stretches in the
    behaviour lane under the timeline, and the panel says how much is labelled, e.g.
    "Labelled 92.4% of frames · 5 gaps".
-   * Press **G** (next gap) or **Shift+G** (previous gap), or **click a hatched stretch**: the
-     whole gap is selected as the start/end.
-   * Press **B** and pick the behaviour. **Double-clicking** a gap opens this window directly.
+   * Press **G** (next gap) or **Shift+G** (previous gap): the whole gap is selected as the
+     start/end.
+   * Or tick **Gap-fill mode** in the Behaviour panel; then **clicking a hatched stretch** selects
+     it and **double-clicking** opens the behaviour window directly. Leave it off while marking
+     with **I**/**O**: then clicking the timeline only moves the playhead. (Even with it on, a
+     click never replaces a start you've marked with **I** but not yet ended.)
+   * Press **B** and pick the behaviour.
      If only part of the gap is one behaviour, change the start/end in the window and fill the
      rest afterwards.
 3. When the panel shows **"✓ Every frame has a behaviour"**, the video is done.

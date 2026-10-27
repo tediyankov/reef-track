@@ -591,8 +591,10 @@ class MainWindow(QMainWindow):
             s, e = self.marks
             gap = self.blog.gap_at(self.cur) if self.blog else None
             if s is None and gap:
-                text = (f"No behaviour here yet (gap {gap[0]}–{gap[1]}). <b>Click the gap</b> on the timeline (or press "
-                        "<b>G</b>) and <b>B</b> to fill it, or mark a new behaviour with <b>I</b>/<b>O</b>.")
+                how = "<b>Click the gap</b> on the timeline or press <b>G</b>" if self.bpanel.gap_mode.isChecked() \
+                    else "Press <b>G</b> to select it"
+                text = (f"No behaviour here yet (gap {gap[0]}–{gap[1]}). {how}, then <b>B</b> to fill it, or mark a new "
+                        "behaviour with <b>I</b>/<b>O</b>.")
             elif s is None:
                 text = "Behaviour: go to the <b>first</b> frame of a behaviour and press <b>I</b>."
             elif e is None:
@@ -1140,9 +1142,12 @@ class MainWindow(QMainWindow):
                 self.bpanel.select_event(event_id)
                 if double:
                     self.edit_behaviour()
-            else:
+            elif self.bpanel.gap_mode.isChecked():
                 gap = self.blog.gap_at(frame)
-                if gap:
+                if gap and self.marks[0] is not None and self.marks[1] is None:
+                    self.statusBar().showMessage("A behaviour start is marked (I): press O to end it, or Clear, "
+                                                 "before selecting a gap.", 6000)
+                elif gap:
                     self.select_gap(gap)
                     if double:
                         self.add_behaviour()

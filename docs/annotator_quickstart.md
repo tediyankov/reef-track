@@ -43,6 +43,7 @@ You need the **video hard drive**, access to **RFS**, and about **5 GB free** on
    |---|---|
    | play / pause | **Space** |
    | step one frame / one second | **←** **→** / **Shift+←** **Shift+→** |
+   | turn a sideways (portrait) video upright | **R** (clockwise) / **Shift+R** (anticlockwise), or **View** menu; remembered for that video |
    | mark a behaviour | **Behaviour** tab: **I** at its first frame, **O** at its last frame, pick the behaviour (or press its number), optional comment, **OK** |
    | fill unlabelled gaps | **G** jumps to the next gap (hatched on the timeline) → **B** → pick behaviour; repeat until "✓ Every frame has a behaviour" |
    | find an annotation | click its coloured chunk on the timeline → its row is highlighted |
@@ -59,6 +60,21 @@ e.g. `fish_in_the_wild/annotations/Maldives/2024_02_14/AM/Cait/Left/GX010703/`, 
 
 If a **red warning** appears, RFS isn't reachable. Keep working: nothing is lost. Reconnect
 RFS and press **Ctrl+S** (Mac: **Cmd+S**); the warning disappears once it has saved.
+
+## Working offline (no RFS / no hard drive)
+
+You can annotate without RFS, using a compressed video someone sends you:
+
+1. You receive **two files** per video, e.g. `GX010703.mp4` and `GX010703.reeftrack.json`. Keep
+   them together in the same folder (e.g. `Documents/videos`). The `.json` file is needed.
+2. Make a folder for your annotations, e.g. `Documents/fish_in_the_wild_annotations`.
+3. Open the tool → **File → Library folders…** → set **Annotations** to that folder (the other
+   two can stay empty or unreachable) → OK.
+4. **File → Open compressed video…** → pick the `.mp4`. Annotate as usual. Files are saved in
+   your annotations folder, in the same sub-folders they'll have on RFS
+   (e.g. `Maldives/2024_02_14/AM/Cait/Left/GX010703/behaviours_<your name>.csv`).
+5. When RFS works again, the maintainer copies everything across with one command
+   (`reeftrack sync-annotations`), or you can zip your annotations folder and send it to them.
 
 ## If something goes wrong
 

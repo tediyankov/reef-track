@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -220,6 +221,9 @@ class BehaviourPanel(EventPanel):
         self.coverage.setWordWrap(True)
         self.btn_prev_gap = QPushButton("◀ Prev gap  [Shift+G]")
         self.btn_next_gap = QPushButton("Next gap ▶  [G]")
+        # off by default, so clicking the timeline to navigate never replaces a range being marked
+        self.gap_mode = QCheckBox("Gap-fill mode: clicking a hatched gap on the timeline selects it")
+        self.gap_mode.setToolTip("Off: clicking the timeline only moves the playhead. G / Shift+G work either way.")
         row = QHBoxLayout()
         row.addWidget(self.btn_prev_gap)
         row.addWidget(self.btn_next_gap)
@@ -227,6 +231,7 @@ class BehaviourPanel(EventPanel):
         i = lay.indexOf(self.btn_add) + 1
         lay.insertWidget(i, self.coverage)
         lay.insertLayout(i + 1, row)
+        lay.insertWidget(i + 2, self.gap_mode)
 
     def set_coverage(self, summary: dict) -> None:
         if summary["complete"]:
@@ -235,7 +240,7 @@ class BehaviourPanel(EventPanel):
         else:
             self.coverage.setText(f"Labelled {100 * summary['fraction']:.1f}% of frames · {summary['n_gaps']} gap"
                                   f"{'s' if summary['n_gaps'] != 1 else ''} (largest {summary['largest_gap_s']:.1f} s, "
-                                  "hatched on the timeline). Click a gap, or press G, then B to fill it.")
+                                  "hatched on the timeline). Press G (or tick gap-fill mode and click a gap), then B.")
             self.coverage.setStyleSheet("color:#ff9d9d;")
 
     def set_events(self, rows: list[dict], categories: list[str], path_text: str) -> None:
