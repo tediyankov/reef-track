@@ -6,7 +6,7 @@ import shutil
 import numpy as np
 import pytest
 
-from reeftrack.gui.overlay import PALETTE, draw_marker, draw_mask, segment_colour
+from reeftrack.gui.overlay import PALETTE, draw_marker, draw_mask, rotate, segment_colour, unrotate_xy
 
 
 def test_draw_mask_tints_only_inside():
@@ -19,6 +19,17 @@ def test_draw_mask_tints_only_inside():
     assert draw_mask(f, np.zeros_like(m), (1, 1, 1)).sum() == 0
     assert draw_mask(f, m, (0, 255, 0), outline=2, dashed=True).sum() > 0
     assert draw_marker(f.copy(), (20, 20), (255, 255, 255)).sum() > 0
+
+
+@pytest.mark.parametrize("deg", [0, 90, 180, 270, -90])
+def test_rotate_and_unrotate_click(deg):
+    img = np.zeros((40, 60, 3), np.uint8)
+    img[10, 50] = 255  # one bright pixel at (x=50, y=10)
+    r = rotate(img, deg)
+    assert r.shape == ((40, 60, 3) if deg % 180 == 0 else (60, 40, 3))
+    ry, rx = np.argwhere(r[..., 0])[0]
+    x, y = unrotate_xy(rx + 0.5, ry + 0.5, deg, img.shape)  # click the centre of that pixel on screen
+    assert (int(x), int(y)) == (50, 10)
 
 
 def test_segment_colours_cycle():
@@ -349,3 +360,89 @@ def test_gui_gap_filling_and_timeline_selection(tmp_path, occlusion_video, monke
     assert win.bpanel.selected_event_id() == first[4]
     assert win.timeline.highlight.get("behaviour") == first[4]
     win.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg needed")
+def test_gui_offline_compressed_video(tmp_path, monkeypatch):
+    """No hard drive, no RFS: open the compressed copy, annotations saved to a local folder."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import csv
+
+    from PySide6.QtWidgets import QApplication
+
+    from reeftrack.gui import app as gui_app
+    from reeftrack.gui.behaviour_panel import BehaviourDialog
+    from reeftrack.library import Library, LibrarySettings
+    from tests.test_library import REL, _write_video
+
+    monkeypatch.setenv("REEFTRACK_HOME", str(tmp_path / "home"))
+    drive, rfs = tmp_path / "drive" / "originaldata", tmp_path / "RFS"
+    for d in (drive, rfs / "compressed_videos", rfs / "annotations"):
+        d.mkdir(parents=True)
+    server = Library(LibrarySettings(video_root=str(drive), compressed_root=str(rfs / "compressed_videos"),
+                                     annotations_root=str(rfs / "annotations"), cache_dir=str(tmp_path / "c"),
+                                     height=240, bitrate="2M"))
+    _write_video(drive / REL)
+    out = server.compress(drive / REL)
+    got = tmp_path / "Downloads"
+    got.mkdir()
+    shutil.copy(out, got / out.name)
+    shutil.copy(server.sidecar_path(server.rel(drive / REL)), got)
+
+    local = tmp_path / "laptop_annotations"
+    local.mkdir()
+    LibrarySettings(video_root="", compressed_root="", annotations_root=str(local)).save()  # her settings
+    monkeypatch.setattr(BehaviourDialog, "exec", lambda self: (self.list.setCurrentRow(0),
+                                                               BehaviourDialog.DialogCode.Accepted)[1])
+    qapp = QApplication.instance() or QApplication([])
+    win = gui_app.MainWindow(library=True)
+    win.annotator_name = "Anna"
+    win.open_compressed(got / out.name)
+    qapp.processEvents()
+    assert win.run.root == local / "Maldives/2024_02_14/AM/Cait/Left/GX010703" and win.n == 30
+    win.goto(3)
+    win.mark_in()
+    win.goto(6)
+    win.mark_out()
+    rows = list(csv.DictReader(open(win.run.root / "behaviours_anna.csv")))
+    assert rows[0]["behaviour"] == "Foraging" and rows[0]["source_video"] == REL
+    win.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg needed")
+def test_gui_rotate_view(tmp_path, occlusion_video):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from reeftrack.gui import app as gui_app
+
+    run = _synthetic_run(tmp_path, occlusion_video)
+    qapp = QApplication.instance() or QApplication([])
+    win = gui_app.MainWindow(behaviour_only=True)
+    win.annotator_name = "tester"
+    win.open_run(run.root)
+    h, w = win.reader[0].shape[:2]
+    pm = win.view._item.pixmap()
+    assert (pm.width(), pm.height()) == (w, h)
+    win.rotate_view(90)
+    pm = win.view._item.pixmap()
+    assert (pm.width(), pm.height()) == (h, w)  # portrait on screen
+    assert run.meta()["view"]["rotation"] == 90  # remembered for this video
+    seen = []
+    win._on_click = lambda x, y, b: seen.append((x, y))
+    win._on_view_click(h - 20, 30, Qt.MouseButton.LeftButton)  # screen point -> video pixel
+    assert seen == [(30, 20)]
+    win.rotate_view(-90)
+    assert win.rotation == 0
+    win.rotate_view(-90)
+    win.close()
+
+    again = gui_app.MainWindow(behaviour_only=True)
+    again.annotator_name = "tester"
+    again.open_run(run.root)
+    assert again.rotation == 270
+    again.close()
+    qapp.processEvents()

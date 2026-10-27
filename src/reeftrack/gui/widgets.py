@@ -35,9 +35,9 @@ class VideoView(QGraphicsView):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_frame(self, rgb: np.ndarray) -> None:
-        first = self._item.pixmap().isNull()
+        old = self._item.pixmap()
         self._item.setPixmap(QPixmap.fromImage(to_qimage(rgb)))
-        if first:
+        if old.isNull() or (old.width(), old.height()) != (rgb.shape[1], rgb.shape[0]):  # first frame or rotated
             self.scene().setSceneRect(QRectF(0, 0, rgb.shape[1], rgb.shape[0]))
             self.fitInView(self._item, Qt.AspectRatioMode.KeepAspectRatio)
 

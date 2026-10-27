@@ -70,7 +70,9 @@ from reeftrack.gui.overlay import (
     draw_marker,
     draw_mask,
     draw_pip,
+    rotate,
     segment_colour,
+    unrotate_xy,
 )
 from reeftrack.gui.widgets import Timeline, VideoView
 
@@ -142,6 +144,8 @@ class MainWindow(QMainWindow):
         self.reader = None
         self.fmap = None
         self.cur = 0
+        self._frame_shape: tuple[int, ...] | None = None  # unrotated shape of the frame on screen
+        self.rotation = 0  # display rotation (degrees clockwise); clicks are mapped back to the video's pixels
         self.pending: tuple[int, tuple[float, float], np.ndarray] | None = None
         self.worker: Worker | None = None
         self._track_t0 = 0.0
@@ -158,7 +162,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
         self.view = VideoView()
-        self.view.clicked.connect(self._on_click)
+        self.view.clicked.connect(self._on_view_click)
         self.timeline = Timeline()
         self.timeline.seek.connect(self.goto)
         self.timeline.lane_clicked.connect(self._on_lane_clicked)
@@ -330,6 +334,7 @@ class MainWindow(QMainWindow):
 
         m = self.menuBar().addMenu("&File")
         items = [("Open video from hard drive…", self.open_video_dialog, "Ctrl+O"),
+                 ("Open compressed video…", self.open_compressed_dialog, "Ctrl+Shift+C"),
                  ("Library folders…", self.library_settings, "Ctrl+,"), ("Save", self.save, "Ctrl+S")]
         if not self.library:
             items = [("New run from video…", self.new_run, "Ctrl+N"), ("Open run…", self.open_run_dialog, "Ctrl+Shift+O"),
@@ -339,6 +344,12 @@ class MainWindow(QMainWindow):
             a.setShortcut(QKeySequence(key))
             a.triggered.connect(slot)
             m.addAction(a)
+        vm = self.menuBar().addMenu("&View")
+        for text, step, key in [("Rotate clockwise", 90, "R"), ("Rotate anticlockwise", -90, "Shift+R")]:
+            a = QAction(text, self)
+            a.setShortcut(QKeySequence(key))
+            a.triggered.connect(lambda _=False, step=step: self.rotate_view(step))
+            vm.addAction(a)
         self.statusBar().showMessage("File → Open video from hard drive…" if self.library else
                                      "File → Open run…, New run from video… or Open video from hard drive…")
 
@@ -452,6 +463,7 @@ class MainWindow(QMainWindow):
             self.timeline.keyframes = np.asarray(json.loads(kf_path.read_text())["keyframes"])
         self.frame_box.setRange(0, self.n - 1)
         meta = self.run.meta()
+        self.rotation = int(meta.get("view", {}).get("rotation", 0)) % 360
         if self.run.is_library:
             src = "original video (slower)" if self.run.video_is_raw else "compressed copy"
             self.info.setText(f"<b>{meta['source']['rel']}</b><br>{self.n} frames @ {self.fmap.proxy_fps:.2f} fps · "
@@ -546,6 +558,8 @@ class MainWindow(QMainWindow):
         for s in tr.segments:
             if s.prompt_frame == self.cur:
                 frame = draw_marker(frame.copy(), s.prompt_xy, segment_colour(s.segment_id))
+        self._frame_shape = frame.shape
+        frame = rotate(frame, self.rotation)  # labels and inset are drawn upright on the rotated view
         if self.blog and self.show_labels.isChecked():
             cats = self.blog.categories
             labels = [(e.behaviour, behaviour_colour(e.behaviour, cats)) for e in self.blog.active_at(self.cur)]
@@ -554,7 +568,7 @@ class MainWindow(QMainWindow):
                 labels.append((f"Loop {lp.event_id} ({where})", LOOP_COLOUR))
             frame = draw_labels(frame, labels)
         if self.loop_marks[0] is not None and self.tabs.currentWidget() is self.lpanel:
-            frame = draw_pip(frame, self.reader[self.loop_marks[0]], f"loop start - frame {self.loop_marks[0]}")
+            frame = draw_pip(frame, rotate(self.reader[self.loop_marks[0]], self.rotation), f"loop start - frame {self.loop_marks[0]}")
         self.view.set_frame(frame)
         self._update_active_label()
         t = self.fmap.time_s(self.cur)
@@ -631,6 +645,22 @@ class MainWindow(QMainWindow):
             self.goto(min(cands) if direction > 0 else max(cands))
 
     # ------------------------------------------------------------------ clicking & tracking
+    def rotate_view(self, step: int) -> None:
+        """Turn the display by `step` degrees (portrait videos); remembered for this video in run.yaml."""
+        self.rotation = (self.rotation + step) % 360
+        if self.run:
+            try:
+                self.run.update_meta(view={"rotation": self.rotation})
+            except OSError:  # shared folder unreachable: still rotate, just not remembered
+                pass
+        self.statusBar().showMessage(f"View rotated {self.rotation}° (R / Shift+R; display only, annotations unaffected)")
+        self.render()
+
+    def _on_view_click(self, x: float, y: float, button) -> None:
+        if self._frame_shape:
+            x, y = unrotate_xy(x, y, self.rotation, self._frame_shape)
+        self._on_click(x, y, button)
+
     def _on_click(self, x: float, y: float, button) -> None:
         if not self.session or (self.worker and self.worker.isRunning()):
             return
@@ -960,13 +990,49 @@ class MainWindow(QMainWindow):
         from reeftrack.library import LibrarySettings
 
         s = LibrarySettings.load()
-        if s.problems() and not self.library_settings():
+        if s.problems(required=("annotations_root",)) and not self.library_settings():
             return
         s = LibrarySettings.load()
+        if s.problems(required=("video_root",)):  # no hard drive here: annotate from a compressed copy
+            self.statusBar().showMessage("Original-videos folder not available; opening a compressed video instead.")
+            self.open_compressed_dialog()
+            return
         path, _ = QFileDialog.getOpenFileName(self, "Choose a video to annotate", s.video_root,
                                               "Videos (*.mp4 *.MP4 *.mov *.MOV)")
         if path:
             self.open_video(Path(path))
+
+    def open_compressed_dialog(self) -> None:
+        from reeftrack.library import LibrarySettings
+
+        s = LibrarySettings.load()
+        if s.problems(required=("annotations_root",)) and not self.library_settings():
+            return
+        s = LibrarySettings.load()
+        start = s.compressed_root if s.compressed_root and Path(s.compressed_root).is_dir() else str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a compressed video (.mp4 with its .reeftrack.json)",
+                                              start, "Compressed videos (*.mp4)")
+        if path:
+            self.open_compressed(Path(path))
+
+    def open_compressed(self, mp4: Path) -> None:
+        """Annotate from a compressed copy alone (no hard drive / shared storage needed)."""
+        from reeftrack.config import load_config
+        from reeftrack.library import Library, LibrarySettings
+
+        s = LibrarySettings.load()
+        probs = s.problems(required=("annotations_root",))
+        if probs:
+            QMessageBox.warning(self, "Library folders", "\n".join(probs) + "\n\nFile → Library folders… to fix.")
+            return
+        if not self.annotator_name and not self._ensure_annotator():
+            return
+        try:
+            run = Library(s).open_compressed(mp4, load_config(self.config_path))
+        except (OSError, ValueError, RuntimeError, KeyError) as e:
+            QMessageBox.critical(self, "Can't open this video", str(e))
+            return
+        self.open_run(run)
 
     def open_video(self, video: Path, choice: str | None = None) -> None:
         """Open an original video from the library: use (or make) its compressed copy."""
@@ -1189,7 +1255,10 @@ def main(run_dir: Path | None = None, config: Path | None = None, behaviour_only
     if run_dir:
         QTimer.singleShot(0, lambda: win.open_run(Path(run_dir)))
     elif video:
-        QTimer.singleShot(0, lambda: win.open_video(Path(video)))
+        from reeftrack.library import Library
+
+        opener = win.open_compressed if Library.sidecar_for(video).exists() else win.open_video
+        QTimer.singleShot(0, lambda: opener(Path(video)))
     elif library:
         QTimer.singleShot(0, win.open_video_dialog)
     sys.exit(app.exec())

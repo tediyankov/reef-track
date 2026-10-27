@@ -18,6 +18,24 @@ PALETTE = [
 PREVIEW = (255, 255, 255)
 
 
+def rotate(img: np.ndarray, degrees: int) -> np.ndarray:
+    """Rotate an image clockwise by a multiple of 90 degrees (display only; data stays unrotated)."""
+    return np.ascontiguousarray(np.rot90(img, k=-(degrees // 90) % 4))
+
+
+def unrotate_xy(x: float, y: float, degrees: int, shape: tuple[int, ...]) -> tuple[float, float]:
+    """Map a point on the rotated display back to the original image (`shape` = original (h, w, ...))."""
+    h, w = shape[:2]
+    d = degrees % 360
+    if d == 90:
+        return y, h - x
+    if d == 180:
+        return w - x, h - y
+    if d == 270:
+        return w - y, x
+    return x, y
+
+
 def segment_colour(segment_id: int) -> tuple[int, int, int]:
     return PALETTE[segment_id % len(PALETTE)]
 
