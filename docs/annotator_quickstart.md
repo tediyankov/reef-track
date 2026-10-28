@@ -66,7 +66,10 @@ RFS and press **Ctrl+S** (Mac: **Cmd+S**); the warning disappears once it has sa
 You can annotate without RFS, using a compressed video someone sends you:
 
 1. You receive **two files** per video, e.g. `GX010703.mp4` and `GX010703.reeftrack.json`. Keep
-   them together in the same folder (e.g. `Documents/videos`). The `.json` file is needed.
+   them together in the same folder (e.g. `Documents/videos`). The `.json` file is needed,
+   unless the hard drive is connected and **Compressed videos** points at the folder that
+   contains `Maldives`: then the tool checks the `.mp4` against the original and recreates the
+   `.json` itself.
 2. Make a folder for your annotations, e.g. `Documents/fish_in_the_wild_annotations`.
 3. Open the tool → **File → Library folders…** → set **Annotations** to that folder (the other
    two can stay empty or unreachable) → OK.

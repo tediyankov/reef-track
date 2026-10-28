@@ -1057,12 +1057,13 @@ class MainWindow(QMainWindow):
         from reeftrack.config import load_config
 
         cfg = load_config(self.config_path)
-        if lib.compressed_info(rel):
+        if lib.adopt_compressed(video):  # also recognises a copy whose .reeftrack.json went missing
             choice = "compressed"
         elif choice is None:
             from reeftrack.gui.library_ui import ask_no_compressed_copy
 
-            choice = ask_no_compressed_copy(self, str(rel), fmap.n_proxy / fmap.proxy_fps / 60 * 1.1)
+            choice = ask_no_compressed_copy(self, str(rel), fmap.n_proxy / fmap.proxy_fps / 60 * 1.1,
+                                            lib.compressed_status(rel))
         if choice == "cancel":
             return
         self.progress.setVisible(True)
