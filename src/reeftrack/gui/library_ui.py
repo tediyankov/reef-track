@@ -68,7 +68,9 @@ class LibraryDialog(QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("Set these once on this computer. Connect the hard drive and RFS first."))
+        lay.addWidget(QLabel("Set these once on this computer (connect the hard drive and RFS first).\n"
+                             "Only 'Annotations' is required: to annotate offline, point it at a folder on this "
+                             "laptop and open videos with File → Open compressed video…"))
         lay.addLayout(form)
         lay.addWidget(self.problems)
         lay.addWidget(buttons)
@@ -87,7 +89,7 @@ class LibraryDialog(QDialog):
 
     def _accept(self) -> None:
         s = self.values()
-        probs = s.problems()
+        probs = s.problems(required=("annotations_root",))  # the rest is optional (offline annotating)
         if probs:
             self.problems.setText("Please fix:\n• " + "\n• ".join(probs))
             return
@@ -96,8 +98,8 @@ class LibraryDialog(QDialog):
         self.accept()
 
 
-def ask_no_compressed_copy(parent, rel: str, minutes: float) -> str:
-    """Returns 'compress', 'original' or 'cancel'."""
+def ask_no_compressed_copy(parent, rel: str, minutes: float, reason: str = "") -> str:
+    """Returns 'compress', 'original' or 'cancel'. `reason` says what was looked for (and where)."""
     box = QMessageBox(parent)
     box.setWindowTitle("No compressed copy yet")
     box.setIcon(QMessageBox.Icon.Question)
@@ -105,7 +107,10 @@ def ask_no_compressed_copy(parent, rel: str, minutes: float) -> str:
     box.setInformativeText(
         f"Compress it now (about {minutes:.0f} min, done once, then shared on RFS for everyone and "
         "smooth to annotate), or open the original video straight from the hard drive (works, but "
-        "jumping around is slower).")
+        "jumping around is slower)."
+        + (f"<br><br><small>{reason}.<br>If you were sent a compressed copy, check that File → Library folders → "
+           "'Compressed videos' is the folder that contains 'Maldives', or use File → Open compressed video…"
+           "</small>" if reason else ""))
     b_comp = box.addButton("Compress now", QMessageBox.ButtonRole.AcceptRole)
     b_orig = box.addButton("Open original", QMessageBox.ButtonRole.ActionRole)
     box.addButton(QMessageBox.StandardButton.Cancel)

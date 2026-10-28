@@ -28,6 +28,7 @@ def _write_video(path, n=120, fps=120):
 @pytest.fixture
 def lib(tmp_path, monkeypatch):
     monkeypatch.setenv("REEFTRACK_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr("reeftrack.library._same_disk", lambda a, b: False)  # 'RFS' is a network share
     drive = tmp_path / "Seagate" / "originaldata"
     rfs = tmp_path / "RFS" / "fish_in_the_wild"
     for d in (drive, rfs / "compressed_videos", rfs / "annotations"):
@@ -108,6 +109,42 @@ def test_compress_open_and_annotate(lib):
 
 
 @needs_ffmpeg
+@needs_ffmpeg
+def test_copy_sent_without_info_file_is_recognised(lib, monkeypatch):
+    """Only the .mp4 was sent: with the original at hand, the copy is checked and its info file rebuilt."""
+    video = lib.video_root / REL
+    _write_video(video)
+    rel = lib.rel(video)
+    lib.compress(video)
+    sc, mp4 = lib.sidecar_path(rel), lib.compressed_path(rel)
+    sc.unlink()
+    assert lib.compressed_info(rel) is None and "info file" in lib.compressed_status(rel)
+    assert lib.adopt_compressed(video)["n_frames"] == 30 and sc.exists()  # rebuilt, not re-encoded
+    sc.unlink()
+    assert lib.open_compressed(mp4).video == mp4 and sc.exists()  # File → Open compressed video, too
+
+    # a copy with the wrong number of frames is not adopted
+    sc.unlink()
+    good = mp4.read_bytes()
+    _write_video(mp4, n=40)
+    assert lib.adopt_compressed(video) is None and not sc.exists()
+    mp4.write_bytes(good)
+    mp4.unlink()
+    assert "No compressed copy found" in lib.compressed_status(rel)
+
+
+@needs_ffmpeg
+def test_compressed_folder_on_this_computer_plays_directly(lib, monkeypatch):
+    video = lib.video_root / REL
+    _write_video(video)
+    rel = lib.rel(video)
+    lib.compress(video)
+    monkeypatch.setattr("reeftrack.library._same_disk", lambda a, b: True)
+    shutil.rmtree(lib.cache_dir)
+    assert lib.open_run(video).video == lib.compressed_path(rel)  # no second 1.5 GB copy in the cache
+    assert not lib.cache_path(rel).exists()
+
+
 def test_original_fallback_reads_same_frames(lib):
     from reeftrack.io.video import FrameReader, RawFrameReader
 
@@ -180,3 +217,77 @@ def test_cache_pruned_least_recently_used(lib):
         files.append(p)
     lib.prune_cache(keep=files[0])
     assert files[0].exists() and not files[1].exists()  # 'keep' survives even though oldest
+
+
+@needs_ffmpeg
+def test_offline_annotation_then_sync_to_shared(lib, tmp_path, monkeypatch):
+    """Colleague without RFS/hard drive: gets the compressed .mp4 + .json, annotates locally,
+    later the annotations are merged into the shared folder."""
+    import os
+    import time
+
+    from reeftrack.annotation.behaviour import BehaviourLog
+    from reeftrack.library import sync_annotations
+
+    video = lib.video_root / REL
+    _write_video(video)
+    lib.compress(video)
+    rel = lib.rel(video)
+
+    # what she receives (any folder, e.g. Downloads) and her settings: only a local annotations folder
+    got = tmp_path / "Downloads"
+    got.mkdir()
+    shutil.copy(lib.compressed_path(rel), got / "GX010703.mp4")
+    shutil.copy(lib.sidecar_path(rel), got / "GX010703.reeftrack.json")
+    local_ann = tmp_path / "laptop" / "annotations"
+    local_ann.mkdir(parents=True)
+    her = Library(LibrarySettings(annotations_root=str(local_ann), cache_dir=str(tmp_path / "c2")))
+    assert her.s.problems(required=("annotations_root",)) == [] and her.s.problems()  # drive/RFS optional
+
+    run = her.open_compressed(got / "GX010703.mp4")
+    assert run.root == local_ann / "Maldives/2024_02_14/AM/Cait/Left/GX010703"  # same layout as on RFS
+    assert run.video == got / "GX010703.mp4" and run.frame_map().n_proxy == 30
+    b = BehaviourLog.for_run(run, DEFAULT_BEHAVIOURS, "Anna")
+    b.add("Foraging", 2, 9, "offline", "Anna")
+    assert list(csv.DictReader(open(b.path)))[0]["source_video"] == REL
+
+    # errors that matter in practice
+    (got / "lonely.mp4").write_bytes((got / "GX010703.mp4").read_bytes())
+    with pytest.raises(FileNotFoundError, match="reeftrack.json"):
+        her.open_compressed(got / "lonely.mp4")
+    shutil.copy(got / "GX010703.reeftrack.json", got / "lonely.reeftrack.json")
+    with open(got / "lonely.mp4", "r+b") as fh:
+        fh.truncate(1000)
+    with pytest.raises(ValueError, match="incomplete"):
+        her.open_compressed(got / "lonely.mp4")
+
+    # someone already has a file for this video on the shared drive
+    shared_run = lib.open_run(video)
+    BehaviourLog.for_run(shared_run, DEFAULT_BEHAVIOURS, "Ben").add("Chasing", 0, 1, annotator="Ben")
+
+    shared = lib.annotations_root
+    preview = sync_annotations(local_ann, shared, dry_run=True, log=lambda *_: None)
+    assert preview["copied"] == 1 and not (shared_run.root / "behaviours_anna.csv").exists()  # dry run copies nothing
+    counts = sync_annotations(local_ann, shared, log=lambda *_: None)
+    assert counts["copied"] == 1  # her CSV; the shared run.yaml/config.yaml are kept
+    assert sorted(p.name for p in shared_run.root.glob("*.csv")) == ["behaviours_anna.csv", "behaviours_ben.csv"]
+    assert sync_annotations(local_ann, shared, log=lambda *_: None)["same"] == 1  # idempotent
+
+    # she edits offline later -> newer local file updates the shared one; an older one never overwrites
+    time.sleep(0.01)
+    b.add("Out of view", 10, 29, annotator="Anna")
+    assert sync_annotations(local_ann, shared, log=lambda *_: None)["updated"] == 1
+    old = time.time() - 3600
+    os.utime(b.path, (old, old))
+    (shared_run.root / "behaviours_anna.csv").write_text((shared_run.root / "behaviours_anna.csv").read_text() + "")
+    b.path.write_text(b.path.read_text().replace("offline", "stale"))
+    os.utime(b.path, (old, old))
+    assert sync_annotations(local_ann, shared, log=lambda *_: None)["kept_newer_in_dest"] == 1
+
+    # a folder whose frame layout disagrees is skipped, not merged
+    import yaml
+
+    y = yaml.safe_load((run.root / "run.yaml").read_text())
+    y["frames"]["stride"] = 2
+    (run.root / "run.yaml").write_text(yaml.safe_dump(y))
+    assert sync_annotations(local_ann, shared, log=lambda *_: None)["skipped_mismatch"] == 1

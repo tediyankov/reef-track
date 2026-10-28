@@ -117,7 +117,7 @@ def _compress_many(videos: list[Path], dry_run: bool = False) -> None:
         except (ValueError, FileNotFoundError) as e:
             typer.echo(f"SKIP  {v}: {e}")
             continue
-        if lib.compressed_info(rel):
+        if lib.adopt_compressed(v):
             typer.echo(f"done  {rel}")
             continue
         todo.append(v)
@@ -147,6 +147,21 @@ def _compress_many(videos: list[Path], dry_run: bool = False) -> None:
     for v, e in failed:
         typer.echo(f"FAILED {v}: {e}")
     typer.echo(f"finished: {len(todo) - len(failed)} compressed, {len(failed)} failed")
+
+
+@app.command("sync-annotations")
+def sync_annotations_cmd(
+    src: Annotated[Path, typer.Argument(help="Annotations folder to copy from, e.g. a laptop's local folder.")],
+    dst: Annotated[Path, typer.Argument(help="Annotations folder to copy into, e.g. RFS/.../fish_in_the_wild/annotations")],
+    dry_run: bool = typer.Option(False, "--dry-run", help="Only show what would be copied."),
+) -> None:
+    """Merge offline annotations into the shared folder (never overwrites a newer file)."""
+    from reeftrack.library import sync_annotations
+
+    if not src.is_dir() or not dst.is_dir():
+        raise typer.BadParameter("both folders must exist (is RFS connected?)")
+    counts = sync_annotations(src, dst, dry_run, log=typer.echo)
+    typer.echo(("[dry run] " if dry_run else "") + ", ".join(f"{k}: {v}" for k, v in counts.items()))
 
 
 @app.command()

@@ -6,7 +6,7 @@ from typer.testing import CliRunner
 from reeftrack.cli import app
 
 COMMANDS = ["prepare", "add-right", "gui", "track", "replay", "reconstruct", "fuse", "view", "compare",
-            "annotate", "library", "compress", "compress-batch"]
+            "annotate", "library", "compress", "compress-batch", "sync-annotations"]
 
 
 @pytest.mark.parametrize("cmd", COMMANDS)

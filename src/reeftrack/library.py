@@ -23,7 +23,11 @@ over the network takes ~0.3-1.7 s per jump; or, without a compressed copy, the o
 Compression is safe to share: it encodes on the local disk, checks the frame count against
 the original, and only then copies the file to RFS under its final name, so a broken or
 half-written copy never appears there. A lock file stops two people compressing the same
-video at the same time.
+video at the same time. A copy whose .reeftrack.json went missing (e.g. only the .mp4 was
+sent to someone) is recognised again once its frame count matches the original.
+
+If `compressed_root` is on this computer (e.g. copies sent to an annotator without RFS),
+videos play straight from it instead of being copied into the cache.
 """
 
 from __future__ import annotations
@@ -81,12 +85,18 @@ class LibrarySettings:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(yaml.safe_dump(asdict(self), sort_keys=False))
 
-    def problems(self) -> list[str]:
-        """Human-readable reasons the library can't be used right now (empty = OK)."""
+    LABELS = {"video_root": "Original videos (hard drive)", "compressed_root": "Compressed videos",
+              "annotations_root": "Annotations"}
+
+    def problems(self, required: tuple[str, ...] = ("video_root", "compressed_root", "annotations_root")) -> list[str]:
+        """Human-readable reasons the library can't be used right now (empty = OK).
+
+        Annotating from a compressed copy alone (no hard drive / RFS, e.g. annotations saved
+        locally and synced later) only needs `annotations_root`.
+        """
         out = []
-        for key, label in (("video_root", "Original videos (hard drive)"), ("compressed_root", "Compressed videos"),
-                           ("annotations_root", "Annotations")):
-            v = getattr(self, key)
+        for key in required:
+            label, v = self.LABELS[key], getattr(self, key)
             if not v:
                 out.append(f"'{label}' folder is not set")
             elif not Path(v).is_dir():
@@ -150,6 +160,57 @@ class Library:
         info = json.loads(sc.read_text())
         return info if mp4.stat().st_size == info.get("bytes") else None
 
+    def compressed_status(self, rel: PurePosixPath) -> str:
+        """Plain-language reason there is no usable compressed copy (for the 'not compressed' dialog)."""
+        sc, mp4 = self.sidecar_path(rel), self.compressed_path(rel)
+        if not mp4.exists():
+            return f"No compressed copy found at {mp4}"
+        if not sc.exists():
+            return f"Found {mp4.name}, but its info file {sc.name} is missing next to it"
+        return f"{mp4} doesn't match its info file {sc.name} (incomplete copy?)"
+
+    def adopt_compressed(self, video: str | Path) -> dict | None:
+        """Recognise a compressed copy whose .reeftrack.json is missing or stale (e.g. only the .mp4
+        was sent): with the original at hand, check the copy has the expected number of frames and
+        write a fresh info file. Returns the info, or None if there is no matching copy."""
+        video = Path(video)
+        rel = self.rel(video)
+        mp4 = self.compressed_path(rel)
+        if self.compressed_info(rel) or not mp4.exists():
+            return self.compressed_info(rel)
+        if mp4.with_suffix(".mp4.lock").exists():
+            return None  # still being compressed
+        fmap = self.frame_map_for(video)
+        try:
+            n = probe(mp4).n_frames
+        except (OSError, ValueError):
+            return None
+        if n != fmap.n_proxy:
+            return None
+        self._write_sidecar(rel, video, fmap, n, mp4)
+        return self.compressed_info(rel)
+
+    def _write_sidecar(self, rel: PurePosixPath, video: Path, fmap: FrameMap, n_frames: int, mp4: Path) -> None:
+        self.sidecar_path(rel).write_text(json.dumps({
+            "source_rel": str(rel), "source_path": str(video), "source_frames": probe(video).n_frames,
+            "source_fps": fmap.source_fps, "stride": fmap.stride, "n_frames": n_frames,
+            "fps": fmap.proxy_fps, "height": self.s.height, "bitrate": self.s.bitrate,
+            "bytes": mp4.stat().st_size, "created": _dt.datetime.now().isoformat(timespec="seconds"),
+            "created_by": f"{getpass.getuser()}@{platform.node()}",
+        }, indent=1))
+
+    def original_for(self, mp4: str | Path) -> Path | None:
+        """The original video on the drive for a compressed copy inside `compressed_root`, if found."""
+        try:
+            rel = Path(mp4).resolve().relative_to(self.compressed_root.resolve())
+        except ValueError:
+            return None
+        folder = self.video_root.joinpath(*rel.parent.parts)
+        if not folder.is_dir():
+            return None
+        return next((p for p in folder.iterdir() if p.stem == rel.stem and p.suffix.lower() in (".mp4", ".mov")
+                     and not p.name.startswith("._")), None)
+
     # ---- compression -----------------------------------------------------------------
     def _lock(self, rel) -> Path:
         return self.compressed_path(rel).with_suffix(".mp4.lock")
@@ -158,7 +219,7 @@ class Library:
         """Make (once) the shared compressed copy of `video`. Returns its path on shared storage."""
         video = Path(video)
         rel = self.rel(video)
-        if self.compressed_info(rel):
+        if self.adopt_compressed(video):
             return self.compressed_path(rel)
         fmap = self.frame_map_for(video)
         lock = self._lock(rel)
@@ -178,13 +239,7 @@ class Library:
             dst = self.compressed_path(rel)
             log(f"[compress] verified {out.n_frames} frames; copying to {dst}")
             _copy(local, dst, progress=None)
-            self.sidecar_path(rel).write_text(json.dumps({
-                "source_rel": str(rel), "source_path": str(video), "source_frames": probe(video).n_frames,
-                "source_fps": fmap.source_fps, "stride": fmap.stride, "n_frames": out.n_frames,
-                "fps": fmap.proxy_fps, "height": self.s.height, "bitrate": self.s.bitrate,
-                "bytes": dst.stat().st_size, "created": _dt.datetime.now().isoformat(timespec="seconds"),
-                "created_by": f"{getpass.getuser()}@{platform.node()}",
-            }, indent=1))
+            self._write_sidecar(rel, video, fmap, out.n_frames, dst)
             self.prune_cache(keep=local)
             return dst
         finally:
@@ -196,6 +251,8 @@ class Library:
         info = self.compressed_info(rel)
         if info is None:
             raise FileNotFoundError(f"no compressed copy of {rel} yet")
+        if _same_disk(self.compressed_path(rel), self.cache_dir):  # compressed folder is on this laptop
+            return self.compressed_path(rel)
         local = self.cache_path(rel)
         if not (local.exists() and local.stat().st_size == info["bytes"]):
             _copy(self.compressed_path(rel), local, progress)
@@ -247,13 +304,119 @@ class Library:
                 raise RuntimeError(f"{root}/run.yaml describes a different video layout than {video}; "
                                    "refusing to mix annotations. Check the file / contact the maintainer.")
             run.update_meta(source=source)  # the drive may be mounted elsewhere on this computer
-        if use_original or not self.compressed_info(rel):
+        if use_original or not self.adopt_compressed(video):
             if not use_original:
                 raise FileNotFoundError(f"no compressed copy of {rel} yet")
             run.video, run.video_is_raw = video, True
         else:
             run.video, run.video_is_raw = self.ensure_local(rel, progress), False
         return run
+
+
+    # ---- annotating from a compressed copy alone --------------------------------------
+    @staticmethod
+    def sidecar_for(mp4: str | Path) -> Path:
+        mp4 = Path(mp4)
+        return mp4.with_name(mp4.stem + SIDECAR_SUFFIX)
+
+    def open_compressed(self, mp4: str | Path, cfg=None):
+        """Open a compressed copy (+ its .reeftrack.json) without the original or shared storage.
+
+        The annotation folder path comes from the info file (the original's path below
+        `originaldata/`), so it is exactly the folder the video would have on RFS: annotations
+        made offline can later be copied across with `reeftrack sync-annotations`.
+        """
+        from reeftrack.config import load_config
+        from reeftrack.io.run import Run
+        from reeftrack.io.video import probe
+
+        mp4 = Path(mp4)
+        sc = self.sidecar_for(mp4)
+        original = None if sc.exists() else self.original_for(mp4)
+        if original is not None:
+            self.adopt_compressed(original)
+        if not sc.exists():
+            raise FileNotFoundError(f"{sc.name} is missing next to {mp4.name}. Copy both files (the .mp4 and the "
+                                    ".reeftrack.json) from compressed_videos.")
+        info = json.loads(sc.read_text())
+        if mp4.stat().st_size != info.get("bytes"):
+            raise ValueError(f"{mp4.name} is incomplete or not the file described by {sc.name} "
+                             f"({mp4.stat().st_size} vs {info.get('bytes')} bytes); copy it again.")
+        fmap = FrameMap(start=0, stride=int(info["stride"]), n_proxy=int(info["n_frames"]),
+                        source_fps=float(info["source_fps"]))
+        if probe(mp4).n_frames != fmap.n_proxy:
+            raise ValueError(f"{mp4.name} doesn't have the expected {fmap.n_proxy} frames; copy it again.")
+        rel = PurePosixPath(info["source_rel"])
+        root = self.annotation_dir(rel)
+        if not (root / "run.yaml").exists():
+            run = Run.create(root, Path(info["source_path"]), fmap, cfg or load_config(), subdirs=False, extra={
+                "layout": "library", "source": {"path": info["source_path"], "rel": str(rel),
+                                                "frames": info.get("source_frames")},
+                "compressed": str(rel.parent / (rel.stem + ".mp4"))})
+        else:
+            run = Run.open(root)
+            if run.frame_map() != fmap:
+                raise RuntimeError(f"{root}/run.yaml describes a different video layout than {mp4.name}; "
+                                   "refusing to mix annotations.")
+        run.video, run.video_is_raw = mp4, False
+        return run
+
+
+def sync_annotations(src: str | Path, dst: str | Path, dry_run: bool = False, log=print) -> dict:
+    """Copy per-video annotation folders from `src` into `dst` (e.g. laptop -> RFS), safely.
+
+    * annotation CSVs (per annotator): copied if missing in `dst`, or if the `src` file is
+      newer and different; never replaced by an older copy.
+    * run.yaml / config.yaml: copied only if the video folder is new in `dst`, and the frame
+      layout must agree if it already exists there (otherwise the folder is skipped).
+    Returns counts per action.
+    """
+    import filecmp
+
+    src, dst = Path(src), Path(dst)
+    counts = {"copied": 0, "updated": 0, "same": 0, "kept_newer_in_dest": 0, "skipped_mismatch": 0}
+    for run_yaml in sorted(src.rglob("run.yaml")):
+        d_src = run_yaml.parent
+        rel = d_src.relative_to(src)
+        d_dst = dst / rel
+        if (d_dst / "run.yaml").exists():
+            a = (yaml.safe_load(run_yaml.read_text()) or {}).get("frames")
+            b = (yaml.safe_load((d_dst / "run.yaml").read_text()) or {}).get("frames")
+            if a != b:
+                log(f"SKIP   {rel}: frame layout differs from the destination's run.yaml")
+                counts["skipped_mismatch"] += 1
+                continue
+        for f in sorted(p for p in d_src.iterdir() if p.is_file() and not p.name.startswith(".")):
+            if f.suffix not in (".csv", ".yaml") or f.name.endswith(".tmp"):
+                continue
+            g = d_dst / f.name
+            if f.suffix == ".yaml" and g.exists():
+                continue  # keep the destination's video info
+            if not g.exists():
+                action = "copied"
+            elif filecmp.cmp(f, g, shallow=False):
+                counts["same"] += 1
+                continue
+            elif f.stat().st_mtime > g.stat().st_mtime:
+                action = "updated"
+            else:
+                log(f"KEEP   {rel}/{f.name}: the destination copy is newer")
+                counts["kept_newer_in_dest"] += 1
+                continue
+            log(f"{'WOULD ' if dry_run else ''}{action.upper():7s} {rel}/{f.name}")
+            counts[action] += 1
+            if not dry_run:
+                _copy(f, g)
+    return counts
+
+
+def _same_disk(a: Path, b: Path) -> bool:
+    """True if `a` is on the same (local) volume as `b`, so copying it into the cache gains nothing."""
+    try:
+        b.mkdir(parents=True, exist_ok=True)
+        return a.stat().st_dev == b.stat().st_dev
+    except OSError:
+        return False
 
 
 def _copy(src: Path, dst: Path, progress=None, chunk: int = 8 << 20) -> None:
