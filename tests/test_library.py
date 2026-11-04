@@ -109,7 +109,6 @@ def test_compress_open_and_annotate(lib):
 
 
 @needs_ffmpeg
-@needs_ffmpeg
 def test_copy_sent_without_info_file_is_recognised(lib, monkeypatch):
     """Only the .mp4 was sent: with the original at hand, the copy is checked and its info file rebuilt."""
     video = lib.video_root / REL
