@@ -5,7 +5,14 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
-from PySide6.QtWidgets import QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QSizePolicy, QWidget
+from PySide6.QtWidgets import (
+    QGraphicsPixmapItem,
+    QGraphicsRectItem,
+    QGraphicsScene,
+    QGraphicsView,
+    QSizePolicy,
+    QWidget,
+)
 
 from reeftrack.gui.overlay import segment_colour
 
@@ -17,9 +24,15 @@ def to_qimage(rgb: np.ndarray) -> QImage:
 
 
 class VideoView(QGraphicsView):
-    """Letter-boxed frame display; emits clicks in *image* pixel coordinates."""
+    """Letter-boxed frame display; emits clicks and dragged boxes in *image* pixel coordinates.
+
+    A left press that moves more than a few screen pixels draws a box (`box_drawn`) instead of
+    a click, so clicking the fish and dragging a zoom box around it use the same button.
+    """
 
     clicked = Signal(float, float, object)  # x, y, Qt.MouseButton
+    box_drawn = Signal(float, float, float, float)  # x0, y0, x1, y1
+    DRAG_PX = 6
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -33,6 +46,13 @@ class VideoView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._press = None  # (screen pos, scene pos) of a left press not yet resolved into click / box
+        self._band = QGraphicsRectItem()
+        self._band.setPen(QPen(QColor(0, 229, 255), 0, Qt.PenStyle.DashLine))
+        self._band.setBrush(QColor(0, 229, 255, 40))
+        self._band.setZValue(1)
+        self._band.setVisible(False)
+        self.scene().addItem(self._band)
 
     def set_frame(self, rgb: np.ndarray) -> None:
         old = self._item.pixmap()
@@ -46,11 +66,43 @@ class VideoView(QGraphicsView):
         if not self._item.pixmap().isNull():
             self.fitInView(self._item, Qt.AspectRatioMode.KeepAspectRatio)
 
+    def _inside(self, p) -> bool:
+        pm = self._item.pixmap()
+        return not pm.isNull() and 0 <= p.x() < pm.width() and 0 <= p.y() < pm.height()
+
+    def _clamp(self, p) -> QPointF:
+        pm = self._item.pixmap()
+        return QPointF(min(max(p.x(), 0.0), pm.width() - 1.0), min(max(p.y(), 0.0), pm.height() - 1.0))
+
     def mousePressEvent(self, e):  # noqa: N802
         p = self.mapToScene(e.position().toPoint())
-        pm = self._item.pixmap()
-        if not pm.isNull() and 0 <= p.x() < pm.width() and 0 <= p.y() < pm.height():
+        if not self._inside(p):
+            return
+        if e.button() == Qt.MouseButton.LeftButton:  # click or drag: decided on move / release
+            self._press = (e.position(), p)
+        else:
             self.clicked.emit(p.x(), p.y(), e.button())
+
+    def mouseMoveEvent(self, e):  # noqa: N802
+        if self._press is None:
+            return
+        d = e.position() - self._press[0]
+        if self._band.isVisible() or abs(d.x()) + abs(d.y()) > self.DRAG_PX:
+            q = self._clamp(self.mapToScene(e.position().toPoint()))
+            self._band.setRect(QRectF(self._press[1], q).normalized())
+            self._band.setVisible(True)
+
+    def mouseReleaseEvent(self, e):  # noqa: N802
+        if self._press is None:
+            return
+        _, p0 = self._press
+        self._press = None
+        if self._band.isVisible():
+            self._band.setVisible(False)
+            r = self._band.rect()
+            self.box_drawn.emit(r.left(), r.top(), r.right(), r.bottom())
+        else:
+            self.clicked.emit(p0.x(), p0.y(), Qt.MouseButton.LeftButton)
 
 
 class Timeline(QWidget):

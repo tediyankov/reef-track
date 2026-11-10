@@ -46,6 +46,8 @@ class Segment:
     end: int
     start_reason: str = "prompt"  # prompt | lost | met_segment | video_start
     end_reason: str = "open"  # lost | met_segment | video_end | open
+    roi: list[int] | None = None  # (w, h) of the window SAM saw, if tracked from the zoom view
+    enhance: str | None = None  # image enhancement SAM saw (reeftrack.enhance), if any
 
     def __len__(self) -> int:
         return self.end - self.start + 1

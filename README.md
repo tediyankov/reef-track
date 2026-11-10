@@ -77,8 +77,10 @@ side; nothing overwrites the other.
 | start a tracklet | left-click the fish → white preview → **Enter** |
 | fish lost (red tick on timeline) | **N** jumps to the next gap → scrub until it's back → click it → Enter (also back-fills the gap) |
 | tracker drifted | click the fish on the bad frame → that segment is cut there and re-tracked |
+| tiny fish: zoom in | **drag a box** around the fish → the box fills the view and follows the fish (its mask where tracked, otherwise template matching, smoothed against shake). Display only. While zoomed, clicks/tracking give SAM **only that window**, re-centred on the fish each frame (saved as `roi` on the segment; masks stay in full-frame pixels). **Z** / **Esc** back to full view, **Z** again to zoom back in; drag again to re-box |
 | undo / save | **Ctrl+Z** / autosaves after every change (**Ctrl+S** to force) |
 | playback | **Space**, **←/→** (±1 frame), **Shift+←/→** (±1 s), timeline click/drag |
+| enhance murky footage | **E** cycles *Off → CLAHE → Retinex → MobileIE* (Display panel). View only, ~2–25 ms/frame so playback stays at 30 fps; applied after the zoom crop. *SAM sees the enhanced image too* (on by default) feeds the same image to SAM, recorded as `enhance` on the segment. MobileIE = 4k-parameter underwater CNN (Yan et al., ICCV 2025, Apache-2.0 weights in `src/reeftrack/enhance/`), needs PyTorch, so it is greyed out in the annotator environment |
 | rotate view (portrait videos) | **R** / **Shift+R** (View menu); display only, saved per video in `run.yaml` (`view.rotation`) |
 | behaviour event (Behaviour tab) | **I** at first frame → **O** at last frame → pick behaviour (number key) + optional comment → OK |
 | edit / delete behaviour | click a row to jump, double-click to edit, *Delete* button; click a chunk on the timeline to select its row |
@@ -150,6 +152,12 @@ reeftrack sync-annotations "<her annotations folder>" "/Volumes/RFS/Triggerfish 
 Annotators install a light environment (no PyTorch/SAM/3D, ~1.7 GB) with a double-clickable
 installer: `scripts/annotator/install_mac.command` or `install_windows.bat`
 (→ *Annotate fish videos* on the Desktop). See [docs/annotator_quickstart.md](docs/annotator_quickstart.md).
+
+### Re-ID frame export
+
+`reeftrack reid-export <tracker.xlsx>` writes `fish_in_the_wild/reid_dataset/` on RFS: for each
+individual, the top-N detector frames from its longest un-occluded stretch, plus `metadata.csv`.
+See [docs/reid_export.md](docs/reid_export.md).
 
 ## Outputs (per run, in `data/runs/<run>/`)
 

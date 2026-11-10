@@ -14,6 +14,13 @@ that segment's prompt) and the new click re-tracks from there.
 
 Each propagation direction uses a fresh SAM session seeded only by the click, so a mistake
 in one direction never contaminates the other.
+
+Tiny fish: pass `roi` (a window x0, y0, w, h, e.g. the GUI's zoom box) and SAM only sees that
+window, re-centred on the fish's last mask every frame (see `reeftrack.tracking.roi`). Masks
+are pasted back into full-frame coordinates, so the tracklet looks the same either way.
+
+`enhance` (e.g. "clahe", see `reeftrack.enhance`) gives SAM an enhanced image (after the
+crop, if any); appearance checks still use the original colours.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from reeftrack.tracking.appearance import AppearanceModel, colour_signature
 from reeftrack.tracking.backends import TrackerBackend, load_backend
 from reeftrack.tracking.masks import area, bbox, centroid, largest_component
 from reeftrack.tracking.quality import FrameSignals, LossDetector, Verdict
+from reeftrack.tracking.roi import Rect, centre_of, crop, paste, rect_at
 from reeftrack.tracking.tracklet import Observation, Segment, Tracklet
 
 log = logging.getLogger(__name__)
@@ -97,10 +105,29 @@ class TrackingSession:
         return len(self.frames)
 
     # ---- user actions --------------------------------------------------------
-    def preview(self, frame_idx: int, xy: tuple[float, float]) -> np.ndarray:
+    @staticmethod
+    def _view(enhance: str | None):
+        """frame, rect -> what SAM is shown (cropped and/or enhanced)."""
+        enh = None
+        if enhance:
+            from reeftrack import enhance as _enh
+
+            enh = _enh.make(enhance)
+
+        def view(frame, rect):
+            img = frame if rect is None else crop(frame, rect)
+            return enh(img) if enh else img
+
+        return view
+
+    def preview(self, frame_idx: int, xy: tuple[float, float], roi: Rect | None = None,
+                enhance: str | None = None) -> np.ndarray:
         """Mask for a click on one frame (no tracking) - lets the user check before committing."""
-        res = self.backend.preview(self.frames[frame_idx], [xy])
-        return largest_component(res.mask)
+        img = self._view(enhance)(self.frames[frame_idx], roi)
+        if roi is None:
+            return largest_component(self.backend.preview(img, [xy]).mask)
+        res = self.backend.preview(img, [(xy[0] - roi[0], xy[1] - roi[1])])
+        return paste(largest_component(res.mask), roi, self.shape)
 
     def add_click(
         self,
@@ -109,14 +136,17 @@ class TrackingSession:
         callback: FrameCallback | None = None,
         should_stop: Callable[[], bool] | None = None,
         progress: bool = False,
+        roi: Rect | None = None,
+        enhance: str | None = None,
     ) -> Segment:
         self._make_room(frame_idx)
-        seg = Segment(self.tracklet.next_segment_id(), frame_idx, (float(xy[0]), float(xy[1])), frame_idx, frame_idx)
+        seg = Segment(self.tracklet.next_segment_id(), frame_idx, (float(xy[0]), float(xy[1])), frame_idx, frame_idx,
+                      roi=[int(v) for v in roi[2:]] if roi else None, enhance=enhance)
         self.tracklet.segments.append(seg)
         try:
-            seg.end_reason = self._propagate(seg, +1, callback, should_stop, progress)
+            seg.end_reason = self._propagate(seg, +1, callback, should_stop, progress, roi, enhance)
             if self.tc.backfill:
-                seg.start_reason = self._propagate(seg, -1, callback, should_stop, progress)
+                seg.start_reason = self._propagate(seg, -1, callback, should_stop, progress, roi, enhance)
         except Exception:
             self.tracklet.remove_segment(seg.segment_id)
             raise
@@ -169,11 +199,22 @@ class TrackingSession:
             mask,
         )
 
-    def _propagate(self, seg, direction, callback, should_stop, progress) -> str:
+    def _propagate(self, seg, direction, callback, should_stop, progress, roi: Rect | None = None,
+                   enhance: str | None = None) -> str:
         start = seg.prompt_frame
         frame = self.frames[start]
-        res = self.backend.start(frame, [seg.prompt_xy])
-        mask = largest_component(res.mask)
+        view = self._view(enhance)
+
+        def segment(res, rect):  # backend output -> full-frame mask
+            m = largest_component(res.mask)
+            return m if rect is None else paste(m, rect, self.shape)
+
+        rect = roi
+        if rect is None:
+            res = self.backend.start(view(frame, None), [seg.prompt_xy])
+        else:
+            res = self.backend.start(view(frame, rect), [(seg.prompt_xy[0] - rect[0], seg.prompt_xy[1] - rect[1])])
+        mask = segment(res, rect)
         if not mask.any():
             raise ValueError(f"no object segmented at click {seg.prompt_xy} on frame {start}")
         sig0 = colour_signature(frame, mask)
@@ -194,6 +235,7 @@ class TrackingSession:
             bar = tqdm(total=total, desc="forward" if direction > 0 else "backward", unit="fr")
 
         f = start + direction
+        last_mask = mask
         reason = "video_end" if direction > 0 else "video_start"
         while 0 <= f < self.n_frames:
             if should_stop and should_stop():
@@ -204,14 +246,17 @@ class TrackingSession:
                 reason = "met_segment"
                 break
             frame = self.frames[f]
-            res = self.backend.step(frame)
-            mask = largest_component(res.mask)
+            if rect is not None:  # keep the fish centred in SAM's window
+                rect = rect_at(centroid(last_mask) if last_mask.any() else centre_of(rect), rect[2:], self.shape)
+            res = self.backend.step(view(frame, rect))
+            mask = segment(res, rect)
             sig = colour_signature(frame, mask)
             s = self._signals(mask, res.presence_logit, appearance.score(sig))
             verdict = detector.assess(s)
             if verdict.ok:
                 self._record(seg, f, mask, s)
                 appearance.update(sig)
+                last_mask = mask
             else:
                 self.backend.forget_last()
             if callback:

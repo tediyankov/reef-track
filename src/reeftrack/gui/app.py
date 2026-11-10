@@ -62,6 +62,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from reeftrack import enhance
 from reeftrack.gui.behaviour_panel import LOOP_COLOUR, BehaviourDialog, BehaviourPanel, LoopDialog, LoopPanel
 from reeftrack.gui.overlay import (
     PREVIEW,
@@ -75,8 +76,13 @@ from reeftrack.gui.overlay import (
     unrotate_xy,
 )
 from reeftrack.gui.widgets import Timeline, VideoView
+from reeftrack.tracking.roi import FishFollower, crop, fit_box
 
 log = logging.getLogger("reeftrack.gui")
+
+ZOOM_W = 1280  # zoomed crops are upscaled to this width before overlays are drawn (crisp outlines)
+ZOOM_COLOUR = (0, 229, 255)
+ENHANCE_W = 960  # full view with enhancement on: work at about the panel's size, so even MobileIE keeps 30 fps
 
 STYLE = """
 QMainWindow, QWidget { background: #0f1a21; color: #dde6ea; font-size: 13px; }
@@ -146,7 +152,14 @@ class MainWindow(QMainWindow):
         self.cur = 0
         self._frame_shape: tuple[int, ...] | None = None  # unrotated shape of the frame on screen
         self.rotation = 0  # display rotation (degrees clockwise); clicks are mapped back to the video's pixels
-        self.pending: tuple[int, tuple[float, float], np.ndarray] | None = None
+        # (frame, click xy, preview mask, SAM window or None, enhancement SAM saw or None)
+        self.pending: tuple[int, tuple[float, float], np.ndarray, tuple | None, str | None] | None = None
+        # Zoom view: drag a box around a small fish -> the box fills the view and follows the fish.
+        # Display only; while zoomed, SAM is also given only that window (see tracking.roi).
+        self.zoom: FishFollower | None = None
+        self.zoom_on = False
+        self._shown_rect: tuple | None = None  # window on screen for the current frame (zoomed)
+        self._xform = (0.0, 0.0, 1.0)  # displayed image -> video pixels: x = x0 + u / scale
         self.worker: Worker | None = None
         self._track_t0 = 0.0
         self._track_n = 0
@@ -163,6 +176,7 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.view = VideoView()
         self.view.clicked.connect(self._on_view_click)
+        self.view.box_drawn.connect(self._on_box)
         self.timeline = Timeline()
         self.timeline.seek.connect(self.goto)
         self.timeline.lane_clicked.connect(self._on_lane_clicked)
@@ -270,6 +284,32 @@ class MainWindow(QMainWindow):
         self.show_labels.setChecked(True)
         self.show_labels.toggled.connect(lambda _: self.render())
         dv.addRow("Labels", self.show_labels)
+        self.btn_zoom = QPushButton("Drag a box around the fish to zoom")
+        self.btn_zoom.setCheckable(True)
+        self.btn_zoom.setEnabled(False)
+        self.btn_zoom.clicked.connect(lambda _=False: self.toggle_zoom())
+        dv.addRow("Zoom (Z)", self.btn_zoom)
+        self.enhance_box = QComboBox()
+        self.enhance_box.addItem("Off", None)
+        for name in enhance.METHODS:
+            self.enhance_box.addItem(enhance.LABELS[name], name)
+            if not enhance.available(name):
+                i = self.enhance_box.count() - 1
+                self.enhance_box.model().item(i).setEnabled(False)
+                self.enhance_box.setItemData(i, "needs PyTorch (full reef-track environment)", Qt.ItemDataRole.ToolTipRole)
+        self.enhance_box.setToolTip("Display only (the video is not changed). CLAHE: local contrast. Retinex: removes the "
+                                    "water veil and colour cast. MobileIE: tiny CNN trained on underwater images (ICCV'25).")
+        saved = self.settings.value("enhance", None)
+        i = self.enhance_box.findData(saved) if saved else 0
+        if i > 0 and enhance.available(saved):
+            self.enhance_box.setCurrentIndex(i)
+        self.enhance_box.currentIndexChanged.connect(self._on_enhance_changed)
+        dv.addRow("Enhance (E)", self.enhance_box)
+        self.enhance_sam = QCheckBox("SAM sees the enhanced image too")
+        self.enhance_sam.setChecked(True)
+        self.enhance_sam.setVisible(not self.behaviour_only)
+        if not self.behaviour_only:
+            dv.addRow("", self.enhance_sam)
 
         self.bpanel = BehaviourPanel()
         self.bpanel.seek.connect(self.goto)
@@ -358,7 +398,7 @@ class MainWindow(QMainWindow):
             "Space": self.toggle_play, "Left": lambda: self.goto(self.cur - 1), "Right": lambda: self.goto(self.cur + 1),
             "Shift+Left": lambda: self.goto(self.cur - self._fps_i()), "Shift+Right": lambda: self.goto(self.cur + self._fps_i()),
             "N": lambda: self.jump_break(+1), "P": lambda: self.jump_break(-1), "Return": self.commit_click,
-            "Enter": self.commit_click, "Escape": self.cancel_click, "Ctrl+Z": self.undo,
+            "Enter": self.commit_click, "Escape": self._escape, "Z": self.toggle_zoom, "E": self.cycle_enhance, "Ctrl+Z": self.undo,
             "M": lambda: self.show_masks.toggle(), "Home": lambda: self.goto(0),
             "End": lambda: self.goto(self.n - 1),
             "I": lambda: self._dispatch("in"), "O": lambda: self._dispatch("out"),
@@ -455,6 +495,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Name needed", "Annotations are saved per annotator, so a name is needed.")
             return
         self._load_logs()
+        self.zoom, self.zoom_on = None, False
+        self._sync_zoom_button()
         self.timeline.set_length(self.n)
         kf_path = self.run.recon_dir / "keyframes.json"
         if kf_path.exists():
@@ -543,21 +585,55 @@ class MainWindow(QMainWindow):
     def render(self) -> None:
         if not self.reader:
             return
+        import cv2
+
         frame = self.reader[self.cur]
         tr = self.session.tracklet
         a = self.opacity.value() / 100
+        ob = tr.obs.get(self.cur)
+        rect = None
+        if self.zoom_on and self.zoom is not None:
+            rect = self.zoom.update(self.cur, frame, ob.centroid if ob is not None else None)
+        self._shown_rect = rect
+        enh = self._enhancer()
+        vr = rect  # region of the video drawn on screen
+        if vr is None and enh is not None and frame.shape[1] > ENHANCE_W:
+            vr = (0, 0, frame.shape[1], frame.shape[0])  # enhance at screen resolution: keeps it real-time
+        if vr is None:
+            self._xform = (0.0, 0.0, 1.0)
+            view_mask, view_xy = (lambda m: m), (lambda xy: xy)
+            if enh is not None:
+                frame = enh(frame)
+        else:  # crop and rescale first, so outlines and markers are drawn at screen resolution
+            out_w = ZOOM_W if rect is not None else ENHANCE_W
+            sc = out_w / vr[2]
+            size = (out_w, int(round(vr[3] * sc)))
+            self._xform = (float(vr[0]), float(vr[1]), sc)
+            img = crop(frame, vr)
+            if rect is not None and enh is not None:
+                img = enh(img)  # zoomed: enhance the native-resolution crop, exactly what SAM is given
+            frame = cv2.resize(img, size, interpolation=cv2.INTER_CUBIC if sc > 1 else cv2.INTER_AREA)
+            if rect is None and enh is not None:
+                frame = enh(frame)
+
+            def view_mask(m):
+                return cv2.resize(crop(m.astype(np.uint8), vr), size, interpolation=cv2.INTER_NEAREST).astype(bool)
+
+            def view_xy(xy):
+                return (xy[0] - vr[0]) * sc, (xy[1] - vr[1]) * sc
         if self.show_masks.isChecked():
-            ob = tr.obs.get(self.cur)
             if ob is not None:
                 m = tr.mask(self.cur)
                 if m is not None:
-                    frame = draw_mask(frame, m, segment_colour(ob.segment_id), a, outline=3)
+                    frame = draw_mask(frame, view_mask(m), segment_colour(ob.segment_id), a, outline=3)
             if self.pending and self.pending[0] == self.cur:
-                frame = draw_mask(frame, self.pending[2], PREVIEW, a * 0.6, outline=3, dashed=True)
-                frame = draw_marker(frame.copy(), self.pending[1], PREVIEW)
+                frame = draw_mask(frame, view_mask(self.pending[2]), PREVIEW, a * 0.6, outline=3, dashed=True)
+                frame = draw_marker(frame.copy(), view_xy(self.pending[1]), PREVIEW)
         for s in tr.segments:
             if s.prompt_frame == self.cur:
-                frame = draw_marker(frame.copy(), s.prompt_xy, segment_colour(s.segment_id))
+                frame = draw_marker(frame.copy(), view_xy(s.prompt_xy), segment_colour(s.segment_id))
+        if rect is not None:  # cyan frame: you are looking at a zoomed, fish-following window
+            cv2.rectangle(frame, (0, 0), (frame.shape[1] - 1, frame.shape[0] - 1), ZOOM_COLOUR, 6)
         self._frame_shape = frame.shape
         frame = rotate(frame, self.rotation)  # labels and inset are drawn upright on the rotated view
         if self.blog and self.show_labels.isChecked():
@@ -566,6 +642,10 @@ class MainWindow(QMainWindow):
             for lp in (self.loops.active_at(self.cur) if self.loops else []):
                 where = "start" if self.cur == lp.start_frame else "return" if self.cur == lp.end_frame else "in"
                 labels.append((f"Loop {lp.event_id} ({where})", LOOP_COLOUR))
+            if enh is not None:
+                labels.append((f"Enhanced: {self.enhance_box.currentText()}  (E)", ZOOM_COLOUR))
+            if rect is not None:
+                labels.append((f"Zoom x{self.session.shape[1] / rect[2]:.1f}  (Z: full view)", ZOOM_COLOUR))
             frame = draw_labels(frame, labels)
         if self.loop_marks[0] is not None and self.tabs.currentWidget() is self.lpanel:
             frame = draw_pip(frame, rotate(self.reader[self.loop_marks[0]], self.rotation), f"loop start - frame {self.loop_marks[0]}")
@@ -614,6 +694,11 @@ class MainWindow(QMainWindow):
         else:
             text = ("Fish not tracked here. When it is back in view, <b>click it to re-acquire</b>; the tracker "
                     "also runs backwards to close the gap.")
+        if self.zoom_on:
+            text += "<br><span style='color:#00e5ff'>Zoomed: the view follows the fish" + (
+                "; SAM only sees this window" if not self.behaviour_only else "") + ". <b>Z</b>/<b>Esc</b>: full view.</span>"
+        elif self.reader is not None and self.zoom is None:
+            text += "<br><span style='color:#9fb3bd'>Small fish? Drag a box around it to zoom in.</span>"
         self.hint.setText(text)
 
     def refresh_tracklet(self) -> None:
@@ -658,10 +743,93 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"View rotated {self.rotation}° (R / Shift+R; display only, annotations unaffected)")
         self.render()
 
-    def _on_view_click(self, x: float, y: float, button) -> None:
+    def _to_video(self, x: float, y: float) -> tuple[float, float]:
+        """A point on the displayed image (rotated, maybe zoomed) -> video pixel coordinates."""
         if self._frame_shape:
             x, y = unrotate_xy(x, y, self.rotation, self._frame_shape)
-        self._on_click(x, y, button)
+        x0, y0, sc = self._xform
+        return x0 + x / sc, y0 + y / sc
+
+    def _on_view_click(self, x: float, y: float, button) -> None:
+        self._on_click(*self._to_video(x, y), button)
+
+    # ------------------------------------------------------------------ zoom view
+    def _on_box(self, x0: float, y0: float, x1: float, y1: float) -> None:
+        """A box dragged on the view: zoom into it (from the full view, or further in when zoomed)."""
+        if not self.reader:
+            return
+        (ax, ay), (bx, by) = self._to_video(x0, y0), self._to_video(x1, y1)
+        vw, vh = max(1, self.view.width()), max(1, self.view.height())
+        aspect = vh / vw if self.rotation in (90, 270) else vw / vh  # fill the view (in video orientation)
+        frame = self.reader[self.cur]
+        rect = fit_box(ax, ay, bx, by, aspect, frame.shape)
+        self.zoom = FishFollower(rect, frame, self.cur)
+        self.zoom_on = True
+        if self.pending:  # its SAM window was the old one
+            self.pending = None
+            self._set_enabled(True)
+        self._sync_zoom_button()
+        self.statusBar().showMessage(f"Zoomed on a {rect[2]}x{rect[3]} px window that follows the fish. "
+                                     "Z or Esc: back to the full view. Clicks now segment inside this window only.")
+        self.render()
+
+    def toggle_zoom(self) -> None:
+        if not self.reader:
+            return
+        if self.zoom is None:
+            self.statusBar().showMessage("Drag a box around the fish on the video to zoom in.")
+            self._sync_zoom_button()
+            return
+        self.zoom_on = not self.zoom_on
+        if self.pending:
+            self.pending = None
+            self._set_enabled(True)
+        self._sync_zoom_button()
+        self.render()
+
+    def _sync_zoom_button(self) -> None:
+        self.btn_zoom.setEnabled(self.zoom is not None)
+        self.btn_zoom.setChecked(self.zoom_on)
+        self.btn_zoom.setText("Zoomed in · click for full view" if self.zoom_on else
+                              "Zoom back in" if self.zoom is not None else "Drag a box around the fish to zoom")
+
+    # ------------------------------------------------------------------ enhancement
+    def _enhancer(self):
+        name = self.enhance_box.currentData()
+        if not name:
+            return None
+        try:
+            return enhance.get(name)
+        except Exception as e:  # e.g. GPU trouble: fall back to the plain view
+            self.statusBar().showMessage(f"{self.enhance_box.currentText()} unavailable: {e}")
+            self.enhance_box.setCurrentIndex(0)
+            return None
+
+    def _sam_enhance(self) -> str | None:
+        return self.enhance_box.currentData() if self.enhance_sam.isChecked() else None
+
+    def _on_enhance_changed(self, _=None) -> None:
+        self.settings.setValue("enhance", self.enhance_box.currentData() or "")
+        if self.pending:  # SAM's preview was made on the other image
+            self.pending = None
+            self._set_enabled(self.reader is not None)
+        if self.reader:
+            self.render()
+
+    def cycle_enhance(self) -> None:
+        n = self.enhance_box.count()
+        i = self.enhance_box.currentIndex()
+        for k in range(1, n + 1):
+            j = (i + k) % n
+            if self.enhance_box.model().item(j).isEnabled():
+                self.enhance_box.setCurrentIndex(j)
+                return
+
+    def _escape(self) -> None:
+        if self.pending is None and self.zoom_on:
+            self.toggle_zoom()
+        else:
+            self.cancel_click()
 
     def _on_click(self, x: float, y: float, button) -> None:
         if not self.session or (self.worker and self.worker.isRunning()):
@@ -674,19 +842,20 @@ class MainWindow(QMainWindow):
             return
         if self.play_timer.isActive():
             self.toggle_play()
-        f, sess = self.cur, self.session
-        self.statusBar().showMessage(f"Segmenting click at ({x:.0f}, {y:.0f}) on frame {f}…")
+        f, sess, roi, enh = self.cur, self.session, self._shown_rect, self._sam_enhance()
+        where = " inside the zoom window" if roi else ""
+        self.statusBar().showMessage(f"Segmenting click at ({x:.0f}, {y:.0f}) on frame {f}{where}…")
 
         def done(mask):
             if not mask.any():
                 self.statusBar().showMessage("Nothing segmented there – click closer to the fish's centre.")
                 return
-            self.pending = (f, (x, y), mask)
+            self.pending = (f, (x, y), mask, roi, enh)
             self._set_enabled(True)
             self.statusBar().showMessage(f"Preview: {int(mask.sum())} px. Enter to track.")
             self.render()
 
-        self._start_worker(lambda emit, stop: sess.preview(f, (x, y)), done=done)
+        self._start_worker(lambda emit, stop: sess.preview(f, (x, y), roi, enh), done=done)
 
     def cancel_click(self) -> None:
         self.pending = None
@@ -696,7 +865,7 @@ class MainWindow(QMainWindow):
     def commit_click(self) -> None:
         if not self.pending or (self.worker and self.worker.isRunning()):
             return
-        f, xy, _ = self.pending
+        f, xy, _, roi, enh = self.pending
         self.pending = None
         sess = self.session
         self.progress.setVisible(True)
@@ -706,7 +875,7 @@ class MainWindow(QMainWindow):
 
         def fn(emit, stop):
             return sess.add_click(f, xy, callback=lambda fr, m, v: emit((fr, m is not None, v.flags)),
-                                  should_stop=stop)
+                                  should_stop=stop, roi=roi, enhance=enh)
 
         self._start_worker(fn, progress=self._on_track_progress, done=self._on_track_done)
         self.render()

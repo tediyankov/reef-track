@@ -81,6 +81,10 @@ def open_scene(run, native: bool = False) -> None:
         html = run.fusion_dir / "scene.html"
         if not html.exists():  # no fusion yet: show the reef-only preview
             html = run.recon_dir / "reef.html"
+        if not html.exists():
+            other = [d.name for d in sorted(run.root.glob("recon*")) if (d / "reef.html").exists()]
+            raise SystemExit(f"nothing to show in {run.recon_dir.name}/ yet"
+                             + (f"; try --recon {other[0]}" if other else " (run `reeftrack reconstruct` first)"))
         webbrowser.open(html.resolve().as_uri())
         return
     import csv

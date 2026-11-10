@@ -207,12 +207,26 @@ def prepare_run(video: Path, start: int = 0, end: int | None = None, name: str |
     return run
 
 
+def has_audio(path: Path) -> bool:
+    import subprocess
+
+    from reeftrack.io.video import _require
+
+    out = subprocess.run([_require("ffprobe"), "-v", "error", "-select_streams", "a", "-show_entries",
+                          "stream=index", "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout
+    return bool(out.strip())
+
+
 def add_right_camera(run: Run, right_video: Path, baseline_m: float | None, cfg: Config | None = None,
-                     n_windows: int = 8, log=print) -> dict:
+                     n_windows: int = 8, log=print, left_audio: Path | None = None) -> dict:
     """Audio-sync a second (right) camera to the run's clip and build a frame-matched right proxy.
 
     Proxy frame i of `proxy_right.mp4` shows the same instant as proxy frame i of `proxy.mp4`
-    (to within half a source frame, i.e. < 4.2 ms at 120 fps).
+    (to within half a right-camera frame, i.e. < 4.2 ms for a 120 fps original).
+
+    The run may come from a compressed library copy (30 fps, no audio): then the audio is read
+    from the left camera's original (`left_audio`), which shares the compressed copy's
+    timeline, and the right camera may run at a different frame rate (e.g. its 120 fps original).
     """
     import numpy as np
 
@@ -221,31 +235,41 @@ def add_right_camera(run: Run, right_video: Path, baseline_m: float | None, cfg:
 
     cfg = cfg or run.config()
     right_video = Path(right_video).resolve()
-    left_video = Path(run.meta()["source"]["path"])
+    left_video = Path(left_audio or run.meta()["source"]["path"])
+    if not has_audio(left_video):
+        raise ValueError(f"{left_video.name} has no audio track (compressed copies don't): pass the left "
+                         "camera's original video for syncing (--left-original)")
     info_r = probe(right_video)
+    fps_r = info_r.fps_float
     fm = run.frame_map()
     t0, t1 = fm.time_s(0), fm.time_s(fm.n_proxy - 1)
     windows = list(np.linspace(t0, max(t0, t1 - 20), n_windows))
-    sync = estimate_offset(left_video, right_video, fm.source_fps, windows)
-    shift = -sync.offset_frames  # right source frame = left source frame + shift
-    right_start = fm.start + int(round(shift))
-    last = right_start + (fm.n_proxy - 1) * fm.stride
+    sync = estimate_offset(left_video, right_video, fps_r, windows)
+    # a sound at left time t is at right time t - offset
+    exact = (t0 - sync.offset_s) * fps_r            # right frame showing the first proxy frame
+    right_start = int(round(exact))
+    stride_r = int(round(fm.stride * fps_r / fm.source_fps))
+    last = right_start + (fm.n_proxy - 1) * stride_r
     if right_start < 0 or last >= info_r.n_frames:
         raise ValueError(f"right camera does not cover the clip (needs frames {right_start}-{last})")
+    shift = exact - t0 * fps_r                      # in right-camera frames
     st = {
         "right_path": str(right_video),
         "baseline_m": baseline_m,
         "sync_offset_s": round(sync.offset_s, 6),
         "right_minus_left_frames": round(float(shift), 3),
         "right_source_start": right_start,
-        "residual_frames": round(float(shift - round(shift)), 3),
+        "right_stride": stride_r,
+        "residual_frames": round(float(exact - right_start), 3),
         "sync_inliers": f"{sync.n_inliers}/{len(windows)}",
         "sync_spread_ms": round(sync.spread_ms, 2),
     }
-    log(f"[stereo] right = left {shift:+.2f} source frames (inliers {st['sync_inliers']}, "
-        f"spread {sync.spread_ms:.1f} ms) -> right proxy from source frame {right_start}")
+    if left_audio:
+        st["left_audio_path"] = str(Path(left_audio).resolve())
+    log(f"[stereo] right = left {shift:+.2f} right-camera frames (inliers {st['sync_inliers']}, "
+        f"spread {sync.spread_ms:.1f} ms) -> right proxy from frame {right_start}, every {stride_r}")
     vc = cfg.video
-    make_proxy(right_video, run.proxy_right, FrameMap(right_start, fm.stride, fm.n_proxy, fm.source_fps),
+    make_proxy(right_video, run.proxy_right, FrameMap(right_start, stride_r, fm.n_proxy, fps_r),
                vc.proxy_height, vc.rotate, vc.crf, vc.gop)
     run.update_meta(stereo=st)
     log(f"[stereo] done: {run.proxy_right}")

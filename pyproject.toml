@@ -19,7 +19,7 @@ reeftrack = "reeftrack.cli:app"
 where = ["src"]
 
 [tool.setuptools.package-data]
-reeftrack = ["py.typed"]
+reeftrack = ["py.typed", "enhance/*.npz", "enhance/LICENSE*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

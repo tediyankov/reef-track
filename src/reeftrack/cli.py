@@ -48,14 +48,19 @@ def add_right(
     run_dir: Path,
     right_video: Annotated[Path, typer.Argument(help="The right-camera video of the same dive.")],
     baseline_cm: Annotated[float | None, typer.Option(help="Lens centre-to-centre distance in cm.")] = None,
+    left_original: Annotated[Path | None, typer.Option(
+        help="Left camera's original video, for its audio (needed when the run uses a compressed copy).")] = None,
     config: ConfigOpt = None,
 ) -> None:
     """Add the second camera of a stereo rig: audio-sync it and build a frame-matched right proxy."""
     from reeftrack.io.run import Run, add_right_camera
 
     run = Run.open(run_dir)
-    add_right_camera(run, right_video, None if baseline_cm is None else baseline_cm / 100, run.config(config),
-                     log=typer.echo)
+    try:
+        add_right_camera(run, right_video, None if baseline_cm is None else baseline_cm / 100, run.config(config),
+                         log=typer.echo, left_audio=left_original)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
 
 
 @app.command()
@@ -162,6 +167,32 @@ def sync_annotations_cmd(
         raise typer.BadParameter("both folders must exist (is RFS connected?)")
     counts = sync_annotations(src, dst, dry_run, log=typer.echo)
     typer.echo(("[dry run] " if dry_run else "") + ", ".join(f"{k}: {v}" for k, v in counts.items()))
+
+
+@app.command("reid-export")
+def reid_export(
+    tracker: Annotated[Path, typer.Argument(help="Annotations tracker spreadsheet (.xlsx or .csv).")],
+    out: Annotated[Path | None, typer.Option(help="Dataset folder (default: reid_dataset next to the "
+                                                  "library's compressed_videos folder).")] = None,
+    weights: Annotated[Path, typer.Option(help="RT-DETR checkpoint.")] = Path("models/RTDETR_aq_and_wild.pt"),
+    n: Annotated[int, typer.Option("--n", help="Frames per fish.")] = 100,
+    min_gap: Annotated[float, typer.Option(help="Minimum seconds between kept frames.")] = 1.0,
+    stride: Annotated[int, typer.Option(help="Run the detector on every Nth frame.")] = 3,
+    fish: Annotated[list[int] | None, typer.Option("--fish", help="Only these Fish IDs (repeatable).")] = None,
+    device: str = typer.Option("auto", help="cuda / mps / cpu"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Redo fish that were already exported."),
+) -> None:
+    """Re-ID dataset: top-N detector frames from each fish's longest un-occluded stretch."""
+    from reeftrack.library import Library
+    from reeftrack.reid.export import Settings, export
+
+    lib = Library()
+    if problems := lib.s.problems(required=("compressed_root", "annotations_root")):
+        raise typer.BadParameter("; ".join(problems))
+    if not weights.exists():
+        raise typer.BadParameter(f"detector checkpoint not found: {weights}")
+    s = Settings(weights=weights, n_per_fish=n, min_gap_s=min_gap, stride=stride, device=device)
+    export(tracker, out or lib.compressed_root.parent / "reid_dataset", s, lib, fish, overwrite, log=typer.echo)
 
 
 @app.command()
