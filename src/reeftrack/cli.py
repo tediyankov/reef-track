@@ -233,8 +233,14 @@ def replay(run_dir: Path, config: ConfigOpt = None) -> None:
     run = Run.open(run_dir)
     prompts = json.loads((run.tracking_dir / "tracklet.json").read_text())["prompts"]
     session = TrackingSession.from_run(run, run.config(config), fresh=True)
+    from reeftrack.tracking.roi import rect_at
+
     for p in prompts:
-        session.add_click(p["frame"], tuple(p["xy"]), progress=True)
+        roi = rect_at(p["xy"], p["roi"], session.shape) if p.get("roi") else None
+        if p.get("polygon"):  # hand-corrected mask prompt
+            session.add_mask(p["frame"], p["polygon"], progress=True, roi=roi, enhance=p.get("enhance"))
+        else:
+            session.add_click(p["frame"], tuple(p["xy"]), progress=True, roi=roi, enhance=p.get("enhance"))
     session.save()
 
 

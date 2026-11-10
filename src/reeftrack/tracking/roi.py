@@ -117,7 +117,7 @@ class FishFollower:
         return (win[0] + mx + tw / 2, win[1] + my + th / 2), float(score)
 
     def update(self, frame_idx: int, frame: np.ndarray, anchor: tuple[float, float] | None = None) -> Rect:
-        if anchor is None and frame_idx in self.cache:  # revisiting: show the same view as before
+        if frame_idx in self.cache and (anchor is None or frame_idx == self.last):  # same view as before
             self.centre, self.last = self.cache[frame_idx], frame_idx
             return self.rect
         near = abs(frame_idx - self.last) <= 2

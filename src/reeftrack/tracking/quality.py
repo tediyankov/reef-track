@@ -48,6 +48,7 @@ class LossDetector:
     max_area_change: float = 4.0
     min_appearance_sim: float = 0.55
     motion_gate_sigmas: float = 6.0
+    motion_min_box_px: float = 32.0
     patience: int = 3
     history: int = 15
 
@@ -63,13 +64,14 @@ class LossDetector:
             max_area_change=tc.max_area_change,
             min_appearance_sim=tc.min_appearance_sim,
             motion_gate_sigmas=tc.motion_gate_sigmas,
+            motion_min_box_px=tc.motion_min_box_px,
             patience=tc.patience,
         )
 
     def initialise(self, s: FrameSignals) -> None:
         """Called with the user-clicked frame: defines what 'good' looks like."""
         self._areas = deque([s.area], maxlen=self.history)
-        self._kf = BoxKalman(xyxy_to_cxcywh(s.bbox)) if s.bbox else None
+        self._kf = BoxKalman(xyxy_to_cxcywh(s.bbox), min_scale=self.motion_min_box_px) if s.bbox else None
         self._bad_streak = 0
 
     @property
@@ -106,5 +108,5 @@ class LossDetector:
             if self._kf is not None:
                 self._kf.update(xyxy_to_cxcywh(s.bbox))
             elif s.bbox is not None:
-                self._kf = BoxKalman(xyxy_to_cxcywh(s.bbox))
+                self._kf = BoxKalman(xyxy_to_cxcywh(s.bbox), min_scale=self.motion_min_box_px)
         return Verdict(ok=not flags, flags=flags, motion_sigma=sigma, broke=self._bad_streak >= self.patience)

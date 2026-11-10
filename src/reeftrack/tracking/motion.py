@@ -14,21 +14,24 @@ import numpy as np
 
 
 class BoxKalman:
-    def __init__(self, box_cxcywh: np.ndarray, pos_std: float = 0.05, vel_std: float = 0.01):
+    def __init__(self, box_cxcywh: np.ndarray, pos_std: float = 0.05, vel_std: float = 0.01, min_scale: float = 1.0):
         # Noise scales are relative to box size, so the filter behaves the same for a fish
-        # that is 30 px or 300 px wide.
+        # that is 30 px or 300 px wide. Below `min_scale` px it stops shrinking: for a tiny fish
+        # the camera's own jitter and a sudden turn are several px, which a purely relative gate
+        # would call an identity switch.
         self._pos_std = pos_std
         self._vel_std = vel_std
+        self._min = min_scale
         self.x = np.zeros(8)
         self.x[:4] = box_cxcywh
-        s = max(box_cxcywh[2], box_cxcywh[3], 1.0)
+        s = max(box_cxcywh[2], box_cxcywh[3], min_scale, 1.0)
         self.P = np.diag(np.r_[np.full(4, (2 * pos_std * s) ** 2), np.full(4, (10 * vel_std * s) ** 2)])
         self.F = np.eye(8)
         self.F[:4, 4:] = np.eye(4)
         self.H = np.eye(4, 8)
 
     def _scale(self) -> float:
-        return max(self.x[2], self.x[3], 1.0)
+        return max(self.x[2], self.x[3], self._min, 1.0)
 
     def predict(self) -> np.ndarray:
         s = self._scale()

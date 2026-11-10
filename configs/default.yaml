@@ -23,6 +23,7 @@ tracking:
   max_area_change: 4.0          # sudden x4 area change vs recent median -> suspicious
   min_appearance_sim: 0.55      # colour-histogram similarity to the clicked fish
   motion_gate_sigmas: 6.0       # Kalman-predicted position gate (SAMURAI-style motion prior)
+  motion_min_box_px: 32         # ...whose tolerance stops shrinking below this box size (tiny fish)
   patience: 3                   # consecutive suspicious frames before the tracklet breaks
   keep_memory_frames: 16        # recent frames kept in SAM memory (bounds RAM on long clips)
   backfill: true                # on re-acquisition also propagate *backwards* to fill the gap

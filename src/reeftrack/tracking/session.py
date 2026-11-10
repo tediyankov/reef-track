@@ -8,6 +8,9 @@ One click = one segment:
      back to when it actually re-emerged from behind the coral, stopping as soon as it meets
      the previous segment.
 
+Instead of a click, a segment can start from a hand-corrected mask (`add_mask`, the GUI's
+mask editor): SAM takes it as the prompted frame's answer and as memory for the frames after.
+
 Clicking a frame that is already tracked is treated as a *correction*: the owning segment
 is cut at that frame (the part after the click, or before it if the click is earlier than
 that segment's prompt) and the new click re-tracks from there.
@@ -34,6 +37,7 @@ import numpy as np
 from reeftrack.tracking.appearance import AppearanceModel, colour_signature
 from reeftrack.tracking.backends import TrackerBackend, load_backend
 from reeftrack.tracking.masks import area, bbox, centroid, largest_component
+from reeftrack.tracking.polygon import Polygon, polygon_to_mask
 from reeftrack.tracking.quality import FrameSignals, LossDetector, Verdict
 from reeftrack.tracking.roi import Rect, centre_of, crop, paste, rect_at
 from reeftrack.tracking.tracklet import Observation, Segment, Tracklet
@@ -138,10 +142,12 @@ class TrackingSession:
         progress: bool = False,
         roi: Rect | None = None,
         enhance: str | None = None,
+        polygon: Polygon | None = None,
     ) -> Segment:
         self._make_room(frame_idx)
         seg = Segment(self.tracklet.next_segment_id(), frame_idx, (float(xy[0]), float(xy[1])), frame_idx, frame_idx,
-                      roi=[int(v) for v in roi[2:]] if roi else None, enhance=enhance)
+                      roi=[int(v) for v in roi[2:]] if roi else None, enhance=enhance,
+                      prompt_polygon=[[float(x), float(y)] for x, y in polygon] if polygon else None)
         self.tracklet.segments.append(seg)
         try:
             seg.end_reason = self._propagate(seg, +1, callback, should_stop, progress, roi, enhance)
@@ -154,6 +160,15 @@ class TrackingSession:
         log.info("segment %d: %d-%d (start: %s, end: %s)", seg.segment_id, seg.start, seg.end,
                  seg.start_reason, seg.end_reason)
         return seg
+
+    def add_mask(self, frame_idx: int, polygon: Polygon, callback: FrameCallback | None = None,
+                 should_stop: Callable[[], bool] | None = None, progress: bool = False,
+                 roi: Rect | None = None, enhance: str | None = None) -> Segment:
+        """Track from a hand-drawn / corrected mask outline (video pixels) instead of a click."""
+        mask = polygon_to_mask(polygon, self.shape)
+        if not mask.any():
+            raise ValueError("the mask outline is empty (needs at least 3 points around the fish)")
+        return self.add_click(frame_idx, centroid(mask), callback, should_stop, progress, roi, enhance, polygon)
 
     def undo(self) -> Segment | None:
         """Remove the most recently created segment."""
@@ -210,11 +225,18 @@ class TrackingSession:
             return m if rect is None else paste(m, rect, self.shape)
 
         rect = roi
-        if rect is None:
+        if seg.prompt_polygon:  # hand-corrected mask: SAM's prompt, and recorded exactly as drawn
+            given = polygon_to_mask(seg.prompt_polygon, self.shape)
+            if rect is not None:
+                rect = rect_at(centroid(given), rect[2:], self.shape)
+            res = self.backend.start(view(frame, rect), [], mask=given if rect is None else crop(given, rect))
+            mask = given
+        elif rect is None:
             res = self.backend.start(view(frame, None), [seg.prompt_xy])
+            mask = segment(res, rect)
         else:
             res = self.backend.start(view(frame, rect), [(seg.prompt_xy[0] - rect[0], seg.prompt_xy[1] - rect[1])])
-        mask = segment(res, rect)
+            mask = segment(res, rect)
         if not mask.any():
             raise ValueError(f"no object segmented at click {seg.prompt_xy} on frame {start}")
         sig0 = colour_signature(frame, mask)

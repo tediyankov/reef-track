@@ -46,6 +46,7 @@ class TrackingConfig(_Strict):
     max_area_change: float = 4.0
     min_appearance_sim: float = 0.55
     motion_gate_sigmas: float = 6.0
+    motion_min_box_px: float = 32.0
     patience: int = 3
     keep_memory_frames: int = 16
     backfill: bool = True

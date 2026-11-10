@@ -6,7 +6,10 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
+    QGraphicsEllipseItem,
+    QGraphicsItem,
     QGraphicsPixmapItem,
+    QGraphicsPolygonItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsView,
@@ -28,11 +31,18 @@ class VideoView(QGraphicsView):
 
     A left press that moves more than a few screen pixels draws a box (`box_drawn`) instead of
     a click, so clicking the fish and dragging a zoom box around it use the same button.
+
+    Mask editing (`set_polygon`): the outline's vertices are drawn as handles of a fixed screen
+    size; drag one to move it, right-click it to delete it. Other clicks still go out through
+    `clicked` (the window adds a vertex there). Every finished edit emits `polygon_edited`.
     """
 
     clicked = Signal(float, float, object)  # x, y, Qt.MouseButton
     box_drawn = Signal(float, float, float, float)  # x0, y0, x1, y1
+    polygon_edited = Signal(list)  # [[x, y], ...] in image pixels
     DRAG_PX = 6
+    HANDLE_PX = 5  # handle radius on screen
+    HIT_PX = 10  # how close (screen px) a press must be to grab a handle
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,6 +63,60 @@ class VideoView(QGraphicsView):
         self._band.setZValue(1)
         self._band.setVisible(False)
         self.scene().addItem(self._band)
+        self._poly: list[QPointF] | None = None  # outline being edited (scene coords), None = not editing
+        self._poly_item = QGraphicsPolygonItem()
+        pen = QPen(QColor(255, 255, 255), 2)
+        pen.setCosmetic(True)
+        self._poly_item.setPen(pen)
+        self._poly_item.setBrush(QColor(255, 255, 255, 45))
+        self._poly_item.setZValue(2)
+        self._poly_item.setVisible(False)
+        self.scene().addItem(self._poly_item)
+        self._handles: list[QGraphicsEllipseItem] = []
+        self._drag: int | None = None  # index of the handle being dragged
+
+    # ---- mask editing ----------------------------------------------------------
+    @property
+    def editing(self) -> bool:
+        return self._poly is not None
+
+    def set_polygon(self, pts) -> None:
+        """Show `pts` ([[x, y], ...] image pixels) as an editable outline; None ends editing."""
+        self._poly = None if pts is None else [QPointF(float(x), float(y)) for x, y in pts]
+        self._drag = None
+        self._redraw_polygon()
+
+    def polygon(self) -> list[list[float]]:
+        return [[p.x(), p.y()] for p in self._poly or []]
+
+    def _redraw_polygon(self) -> None:
+        for h in self._handles:
+            self.scene().removeItem(h)
+        self._handles = []
+        if self._poly is None:
+            self._poly_item.setVisible(False)
+            return
+        self._poly_item.setPolygon(QPolygonF(self._poly))
+        self._poly_item.setVisible(True)
+        r = self.HANDLE_PX
+        for i, p in enumerate(self._poly):
+            h = QGraphicsEllipseItem(-r, -r, 2 * r, 2 * r)
+            h.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)  # same size at any zoom
+            h.setPen(QPen(QColor(10, 18, 24), 1.5))
+            h.setBrush(QColor(0, 229, 255) if i == self._drag else QColor(255, 255, 255))
+            h.setPos(p)
+            h.setZValue(3)
+            self.scene().addItem(h)
+            self._handles.append(h)
+
+    def _handle_at(self, screen_pos) -> int | None:
+        best, best_d = None, float(self.HIT_PX)
+        for i, p in enumerate(self._poly or []):
+            d = self.mapFromScene(p) - screen_pos.toPoint()
+            dist = (d.x() ** 2 + d.y() ** 2) ** 0.5
+            if dist <= best_d:
+                best, best_d = i, dist
+        return best
 
     def set_frame(self, rgb: np.ndarray) -> None:
         old = self._item.pixmap()
@@ -76,6 +140,17 @@ class VideoView(QGraphicsView):
 
     def mousePressEvent(self, e):  # noqa: N802
         p = self.mapToScene(e.position().toPoint())
+        if self.editing:
+            i = self._handle_at(e.position())
+            if i is not None and e.button() == Qt.MouseButton.LeftButton:  # grab a vertex
+                self._drag = i
+                self._redraw_polygon()
+                return
+            if i is not None and e.button() == Qt.MouseButton.RightButton:  # delete a vertex
+                del self._poly[i]
+                self._redraw_polygon()
+                self.polygon_edited.emit(self.polygon())
+                return
         if not self._inside(p):
             return
         if e.button() == Qt.MouseButton.LeftButton:  # click or drag: decided on move / release
@@ -84,6 +159,12 @@ class VideoView(QGraphicsView):
             self.clicked.emit(p.x(), p.y(), e.button())
 
     def mouseMoveEvent(self, e):  # noqa: N802
+        if self._drag is not None:
+            q = self._clamp(self.mapToScene(e.position().toPoint()))
+            self._poly[self._drag] = q
+            self._poly_item.setPolygon(QPolygonF(self._poly))
+            self._handles[self._drag].setPos(q)
+            return
         if self._press is None:
             return
         d = e.position() - self._press[0]
@@ -93,6 +174,11 @@ class VideoView(QGraphicsView):
             self._band.setVisible(True)
 
     def mouseReleaseEvent(self, e):  # noqa: N802
+        if self._drag is not None:
+            self._drag = None
+            self._redraw_polygon()
+            self.polygon_edited.emit(self.polygon())
+            return
         if self._press is None:
             return
         _, p0 = self._press

@@ -1,6 +1,7 @@
 """Promptable video-segmentation backends behind one small streaming interface.
 
     backend.start(frame, points=[(x, y)])  -> StepResult for the prompted frame
+    backend.start(frame, [], mask=m)       -> same, prompted with a (hand-corrected) mask
     backend.step(frame)                    -> StepResult for the next frame in the stream
     backend.forget_last()                  -> drop the last frame from the tracker memory
 
@@ -37,7 +38,8 @@ class StepResult:
 class TrackerBackend(Protocol):
     name: str
 
-    def start(self, frame: np.ndarray, points: list[tuple[float, float]], labels: list[int] | None = None) -> StepResult: ...
+    def start(self, frame: np.ndarray, points: list[tuple[float, float]], labels: list[int] | None = None,
+              mask: np.ndarray | None = None) -> StepResult: ...
 
     def step(self, frame: np.ndarray) -> StepResult: ...
 
@@ -93,7 +95,11 @@ class HFVideoTracker:
         presence = float(logit.flatten()[0]) if logit is not None else (10.0 if mask.any() else -10.0)
         return StepResult(mask=mask, presence_logit=presence)
 
-    def _add_prompt(self, session, idx, inputs, points, labels):
+    def _add_prompt(self, session, idx, inputs, points, labels, mask=None):
+        if mask is not None:  # SAM uses it as this frame's output and as memory for the next frames
+            self.processor.add_inputs_to_inference_session(
+                inference_session=session, frame_idx=idx, obj_ids=self.OBJ_ID, input_masks=np.asarray(mask, bool))
+            return
         self.processor.add_inputs_to_inference_session(
             inference_session=session, frame_idx=idx, obj_ids=self.OBJ_ID,
             input_points=[[[list(map(float, p)) for p in points]]],
@@ -130,12 +136,12 @@ class HFVideoTracker:
         self._add_prompt(session, 0, inputs, points, labels)
         return self._run(session, inputs, 0)
 
-    def start(self, frame, points, labels=None) -> StepResult:
+    def start(self, frame, points, labels=None, mask=None) -> StepResult:
         self.session = self._new_session()
         self._idx = 0
         self._cond = {0}
         inputs = self._encode(frame)
-        self._add_prompt(self.session, 0, inputs, points, labels)
+        self._add_prompt(self.session, 0, inputs, points, labels, mask)
         return self._run(self.session, inputs, 0)
 
     def step(self, frame) -> StepResult:
@@ -172,7 +178,10 @@ class FakeBackend:
     def preview(self, frame, points, labels=None):
         return self._seg(frame)
 
-    def start(self, frame, points, labels=None):
+    def start(self, frame, points, labels=None, mask=None):
+        self.start_mask = None if mask is None else np.asarray(mask, bool).copy()
+        if mask is not None:  # like SAM: the prompted mask is this frame's output
+            return StepResult(mask=self.start_mask, presence_logit=5.0 if self.start_mask.any() else -5.0)
         return self._seg(frame)
 
     def step(self, frame):

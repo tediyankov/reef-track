@@ -77,6 +77,7 @@ side; nothing overwrites the other.
 | start a tracklet | left-click the fish → white preview → **Enter** |
 | fish lost (red tick on timeline) | **N** jumps to the next gap → scrub until it's back → click it → Enter (also back-fills the gap) |
 | tracker drifted | click the fish on the bad frame → that segment is cut there and re-tracked |
+| mask wrong: fix it by hand | **V** on the frame → the mask (or white preview) becomes draggable points: drag to move, click near the outline to add, right-click to delete (no mask: click around the fish to draw one) → **Enter** re-tracks forwards and back with *your* mask as SAM's prompt (same cut/correct rules as a click; outline saved as `prompt_polygon`, used by `replay`). **Esc** cancels. Do it **zoomed in** for small fish: on a full 1080p frame SAM's mask grid is too coarse to hold a 100-px fish |
 | tiny fish: zoom in | **drag a box** around the fish → the box fills the view and follows the fish (its mask where tracked, otherwise template matching, smoothed against shake). Display only. While zoomed, clicks/tracking give SAM **only that window**, re-centred on the fish each frame (saved as `roi` on the segment; masks stay in full-frame pixels). **Z** / **Esc** back to full view, **Z** again to zoom back in; drag again to re-box |
 | undo / save | **Ctrl+Z** / autosaves after every change (**Ctrl+S** to force) |
 | playback | **Space**, **←/→** (±1 frame), **Shift+←/→** (±1 s), timeline click/drag |

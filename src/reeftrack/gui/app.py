@@ -72,10 +72,12 @@ from reeftrack.gui.overlay import (
     draw_mask,
     draw_pip,
     rotate,
+    rotate_xy,
     segment_colour,
     unrotate_xy,
 )
 from reeftrack.gui.widgets import Timeline, VideoView
+from reeftrack.tracking.polygon import insert_vertex, mask_to_polygon
 from reeftrack.tracking.roi import FishFollower, crop, fit_box
 
 log = logging.getLogger("reeftrack.gui")
@@ -160,6 +162,8 @@ class MainWindow(QMainWindow):
         self.zoom_on = False
         self._shown_rect: tuple | None = None  # window on screen for the current frame (zoomed)
         self._xform = (0.0, 0.0, 1.0)  # displayed image -> video pixels: x = x0 + u / scale
+        # Mask editing: {"frame": f, "poly": [[x, y], ...] in video pixels}; Enter re-tracks from it
+        self.edit: dict | None = None
         self.worker: Worker | None = None
         self._track_t0 = 0.0
         self._track_n = 0
@@ -177,6 +181,7 @@ class MainWindow(QMainWindow):
         self.view = VideoView()
         self.view.clicked.connect(self._on_view_click)
         self.view.box_drawn.connect(self._on_box)
+        self.view.polygon_edited.connect(self._on_polygon_edited)
         self.timeline = Timeline()
         self.timeline.seek.connect(self.goto)
         self.timeline.lane_clicked.connect(self._on_lane_clicked)
@@ -242,6 +247,12 @@ class MainWindow(QMainWindow):
         row.addWidget(self.btn_track, 2)
         row.addWidget(self.btn_cancel, 1)
         av.addLayout(row)
+        self.btn_edit = QPushButton("Edit mask by hand  V")
+        self.btn_edit.setCheckable(True)
+        self.btn_edit.setToolTip("Turn this frame's mask (or the white preview) into points you can drag; Enter re-tracks "
+                                 "from your mask. With no mask, click around the fish to draw one.")
+        self.btn_edit.clicked.connect(lambda _=False: self.toggle_edit())
+        av.addWidget(self.btn_edit)
         av.addWidget(self.btn_stop)
         av.addWidget(self.progress)
         av.addWidget(self.track_status)
@@ -398,7 +409,7 @@ class MainWindow(QMainWindow):
             "Space": self.toggle_play, "Left": lambda: self.goto(self.cur - 1), "Right": lambda: self.goto(self.cur + 1),
             "Shift+Left": lambda: self.goto(self.cur - self._fps_i()), "Shift+Right": lambda: self.goto(self.cur + self._fps_i()),
             "N": lambda: self.jump_break(+1), "P": lambda: self.jump_break(-1), "Return": self.commit_click,
-            "Enter": self.commit_click, "Escape": self._escape, "Z": self.toggle_zoom, "E": self.cycle_enhance, "Ctrl+Z": self.undo,
+            "Enter": self.commit_click, "Escape": self._escape, "Z": self.toggle_zoom, "E": self.cycle_enhance, "V": self.toggle_edit, "Ctrl+Z": self.undo,
             "M": lambda: self.show_masks.toggle(), "Home": lambda: self.goto(0),
             "End": lambda: self.goto(self.n - 1),
             "I": lambda: self._dispatch("in"), "O": lambda: self._dispatch("out"),
@@ -417,8 +428,12 @@ class MainWindow(QMainWindow):
         for pnl in (self.bpanel, self.lpanel):
             for w in (pnl.btn_in, pnl.btn_out, pnl.btn_clear, pnl.btn_add, pnl.btn_edit, pnl.btn_delete):
                 w.setEnabled(loaded)
-        self.btn_track.setEnabled(loaded and self.pending is not None and not busy)
-        self.btn_cancel.setEnabled(self.pending is not None and not busy)
+        editing = self.edit is not None
+        self.btn_track.setEnabled(loaded and not busy and (self.pending is not None or (editing and len(self.edit["poly"]) >= 3)))
+        self.btn_cancel.setEnabled((self.pending is not None or editing) and not busy)
+        self.btn_track.setText("Track from my mask  ⏎" if editing else "Track  ⏎")
+        self.btn_edit.setEnabled(loaded and not busy and not self.behaviour_only)
+        self.btn_edit.setChecked(editing)
         self.btn_stop.setVisible(busy)
 
     # ------------------------------------------------------------------ run handling
@@ -552,6 +567,10 @@ class MainWindow(QMainWindow):
         f = int(np.clip(f, 0, self.n - 1))
         if f == self.cur and not force:
             return
+        if self.edit is not None and f != self.edit["frame"]:
+            self.edit = None
+            self._set_enabled(True)
+            self.statusBar().showMessage("Mask edit discarded (moved to another frame).")
         self.cur = f
         self.frame_box.blockSignals(True)
         self.frame_box.setValue(f)
@@ -621,7 +640,8 @@ class MainWindow(QMainWindow):
 
             def view_xy(xy):
                 return (xy[0] - vr[0]) * sc, (xy[1] - vr[1]) * sc
-        if self.show_masks.isChecked():
+        editing_here = self.edit is not None and self.edit["frame"] == self.cur
+        if self.show_masks.isChecked() and not editing_here:  # while editing, the outline is the mask
             if ob is not None:
                 m = tr.mask(self.cur)
                 if m is not None:
@@ -650,6 +670,7 @@ class MainWindow(QMainWindow):
         if self.loop_marks[0] is not None and self.tabs.currentWidget() is self.lpanel:
             frame = draw_pip(frame, rotate(self.reader[self.loop_marks[0]], self.rotation), f"loop start - frame {self.loop_marks[0]}")
         self.view.set_frame(frame)
+        self.view.set_polygon([self._to_display(*v) for v in self.edit["poly"]] if editing_here else None)
         self._update_active_label()
         t = self.fmap.time_s(self.cur)
         self.time_label.setText(f"source frame {self.fmap.to_source(self.cur)}  ·  {int(t // 60):02d}:{t % 60:05.2f}")
@@ -682,6 +703,11 @@ class MainWindow(QMainWindow):
                         "(then pick the behaviour and add a comment).")
             else:
                 text = f"Range {min(s, e)}–{max(s, e)} marked. Press <b>B</b> to assign a behaviour."
+        elif self.edit is not None:
+            text = ("<b>Editing the mask.</b> Drag the points onto the fish's outline; click near an edge to add a point, "
+                    "right-click a point to delete it" + (" (click around the fish to draw one)" if len(self.edit["poly"]) < 3 else "")
+                    + ". <b>Enter</b>: track from this mask (forwards and back). <b>Esc</b>: cancel. "
+                    "Tip: zoom in first (drag a box) for small fish.")
         elif busy and self.pending is None:
             text = "Tracking… the view follows the tracker. Press Stop to interrupt."
         elif self.pending:
@@ -825,8 +851,56 @@ class MainWindow(QMainWindow):
                 self.enhance_box.setCurrentIndex(j)
                 return
 
+    # ------------------------------------------------------------------ hand-corrected masks
+    def _to_display(self, x: float, y: float) -> tuple[float, float]:
+        """Video pixel -> point on the displayed image (inverse of `_to_video`)."""
+        x0, y0, sc = self._xform
+        return rotate_xy((x - x0) * sc, (y - y0) * sc, self.rotation, self._frame_shape)
+
+    def toggle_edit(self) -> None:
+        if self.edit is not None:
+            self.cancel_edit()
+            return
+        if not self.session or self.behaviour_only or (self.worker and self.worker.isRunning()):
+            return
+        if self.play_timer.isActive():
+            self.toggle_play()
+        f = self.cur
+        if self.pending and self.pending[0] == f:
+            mask = self.pending[2]
+        else:
+            mask = self.session.tracklet.mask(f)
+        self.pending = None
+        self.edit = {"frame": f, "poly": mask_to_polygon(mask)}
+        self.statusBar().showMessage(f"Editing the mask on frame {f}: {len(self.edit['poly'])} points." if self.edit["poly"]
+                                     else f"No mask on frame {f}: click around the fish to draw its outline.")
+        self._set_enabled(True)
+        self.render()
+
+    def cancel_edit(self) -> None:
+        self.edit = None
+        self._set_enabled(self.reader is not None)
+        self.render()
+
+    def _on_polygon_edited(self, pts) -> None:
+        if self.edit is not None:
+            self.edit["poly"] = [list(self._to_video(x, y)) for x, y in pts]
+            self._set_enabled(True)
+            self._update_hint()
+
+    def commit_edit(self) -> None:
+        if self.edit is None or len(self.edit["poly"]) < 3 or (self.worker and self.worker.isRunning()):
+            return
+        f, poly = self.edit["frame"], self.edit["poly"]
+        roi, enh, sess = self._shown_rect, self._sam_enhance(), self.session
+        self.edit = None
+        self._start_tracking(lambda emit, stop: sess.add_mask(
+            f, poly, callback=lambda fr, m, v: emit((fr, m is not None, v.flags)), should_stop=stop, roi=roi, enhance=enh))
+
     def _escape(self) -> None:
-        if self.pending is None and self.zoom_on:
+        if self.edit is not None:
+            self.cancel_edit()
+        elif self.pending is None and self.zoom_on:
             self.toggle_zoom()
         else:
             self.cancel_click()
@@ -836,6 +910,12 @@ class MainWindow(QMainWindow):
             return
         if self.behaviour_only:
             self.statusBar().showMessage("Mask tracking is disabled in behaviour-only mode.")
+            return
+        if self.edit is not None:  # editing: a click adds a point (right-clicks on points are handled by the view)
+            if button == Qt.MouseButton.LeftButton and self.cur == self.edit["frame"]:
+                self.edit["poly"], _ = insert_vertex(self.edit["poly"], (x, y))
+                self._set_enabled(True)
+                self.render()
             return
         if button == Qt.MouseButton.RightButton:
             self.cancel_click()
@@ -858,25 +938,30 @@ class MainWindow(QMainWindow):
         self._start_worker(lambda emit, stop: sess.preview(f, (x, y), roi, enh), done=done)
 
     def cancel_click(self) -> None:
+        if self.edit is not None:
+            self.cancel_edit()
+            return
         self.pending = None
         self._set_enabled(self.reader is not None)
         self.render()
 
     def commit_click(self) -> None:
+        if self.edit is not None:
+            self.commit_edit()
+            return
         if not self.pending or (self.worker and self.worker.isRunning()):
             return
         f, xy, _, roi, enh = self.pending
         self.pending = None
         sess = self.session
+        self._start_tracking(lambda emit, stop: sess.add_click(
+            f, xy, callback=lambda fr, m, v: emit((fr, m is not None, v.flags)), should_stop=stop, roi=roi, enhance=enh))
+
+    def _start_tracking(self, fn) -> None:
         self.progress.setVisible(True)
         self.progress.setRange(0, self.n)
         self.progress.setValue(0)
         self._track_t0, self._track_n = time.time(), 0
-
-        def fn(emit, stop):
-            return sess.add_click(f, xy, callback=lambda fr, m, v: emit((fr, m is not None, v.flags)),
-                                  should_stop=stop, roi=roi, enhance=enh)
-
         self._start_worker(fn, progress=self._on_track_progress, done=self._on_track_done)
         self.render()
 

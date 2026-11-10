@@ -92,3 +92,17 @@ def test_detector_flags(bad, flag):
     if bad.get("area") == 0:
         s.bbox = None
     assert flag in d.assess(s).flags
+
+
+def test_motion_gate_floor_for_tiny_boxes():
+    """A 12-px jump is "impossible" for a 10-px box under a purely relative gate, ordinary with the floor."""
+    box = np.array([100.0, 100.0, 10.0, 10.0])
+    strict, floored = BoxKalman(box), BoxKalman(box, min_scale=32)
+    for kf in (strict, floored):
+        kf.predict()
+    jump = np.array([112.0, 100.0, 10.0, 10.0])
+    assert strict.mahalanobis(jump) > 6 > floored.mahalanobis(jump)
+    big = np.array([100.0, 100.0, 80.0, 80.0])  # boxes above the floor are unaffected
+    a, b = BoxKalman(big), BoxKalman(big, min_scale=32)
+    a.predict(), b.predict()
+    assert a.mahalanobis(big + [10, 0, 0, 0]) == b.mahalanobis(big + [10, 0, 0, 0])

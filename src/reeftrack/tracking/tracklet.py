@@ -48,6 +48,7 @@ class Segment:
     end_reason: str = "open"  # lost | met_segment | video_end | open
     roi: list[int] | None = None  # (w, h) of the window SAM saw, if tracked from the zoom view
     enhance: str | None = None  # image enhancement SAM saw (reeftrack.enhance), if any
+    prompt_polygon: list[list[float]] | None = None  # hand-corrected mask outline used as SAM's prompt
 
     def __len__(self) -> int:
         return self.end - self.start + 1
@@ -125,7 +126,8 @@ class Tracklet:
             "shape": list(self.shape),
             "meta": self.meta,
             "prompts": [
-                {"frame": s.prompt_frame, "xy": list(s.prompt_xy), "segment_id": s.segment_id}
+                {"frame": s.prompt_frame, "xy": list(s.prompt_xy), "segment_id": s.segment_id,
+                 **{k: v for k, v in (("polygon", s.prompt_polygon), ("roi", s.roi), ("enhance", s.enhance)) if v}}
                 for s in sorted(self.segments, key=lambda s: s.segment_id)
             ],
             "segments": [asdict(s) for s in self.segments],
