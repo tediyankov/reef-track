@@ -82,11 +82,12 @@ class TrackingSession:
 
     # ---- construction --------------------------------------------------------
     @classmethod
-    def from_run(cls, run, cfg, fresh: bool = False) -> TrackingSession:
+    def from_run(cls, run, cfg, fresh: bool = False, frames=None) -> TrackingSession:
+        """`frames`: an already-open reader (e.g. the GUI's, which may be reading the original)."""
         from reeftrack.devices import resolve_device
         from reeftrack.io.video import FrameReader
 
-        reader = FrameReader(run.proxy)
+        reader = frames if frames is not None else FrameReader(run.proxy)
         tracklet = None
         if not fresh and (run.tracking_dir / "tracklet.json").exists():
             tracklet = Tracklet.load(run.tracking_dir)

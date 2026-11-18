@@ -178,6 +178,13 @@ See [docs/reid_export.md](docs/reid_export.md).
 | `annotations/loops.csv` | loops (fish returns to a known place): frames/times, confidence, landmark, comment, annotator + 3D return distance, path length, max excursion from the trajectory |
 | `compare/report.json`, `compare.html`, `overlay.ply` | mono vs stereo: scale, scale drift, cloud-to-cloud distances, fish paths (`reeftrack compare --mono A --stereo B` compares any two variants) |
 
+## Rendering the reef (Gaussian splatting / NeRF)
+
+`reeftrack export-colmap <run>` turns a stereo reconstruction into a COLMAP scene that
+WaterSplatting (3DV 2025) and I²-NeRF (NeurIPS 2025) train on directly (on a JASMIN GPU);
+`reeftrack render-compare` puts held-out real frames next to each method's render from the same
+camera. Step-by-step commands: [docs/rendering_jasmin.md](docs/rendering_jasmin.md).
+
 ## Mac or JASMIN?
 
 Measured on an M3 Pro (36 GB) for the 3.5-min example clip (6,363 frames at 30 fps):

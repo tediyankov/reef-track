@@ -51,3 +51,34 @@ reid_dataset/
 | `--overwrite` | off | redo fish already exported (saved detector scores are reused, so changing `--n` or `--min-gap` is fast) |
 
 The detector finds *a* triggerfish, not *this* one: check rows with `n_detections` > 1.
+
+## Aquarium background-variation experiment (`reeftrack reid-aquarium`)
+
+One fish per video, a different tank backdrop per video; per-video fish IDs in a CSV
+(`video_path, video_name, fish_ID`; rows without an ID are skipped). Code:
+`src/reeftrack/reid/aquarium.py`, tests: `tests/test_reid_aquarium.py`.
+
+* Only keyframes are read (one per second, full 4K): reading the SD card is the bottleneck.
+* RT-DETR (`models/RTDETR_aq_and_wild.pt`): a frame is usable with exactly one detection
+  (>= 0.25) of confidence >= 0.7. Two detections are the fish and its reflection in the glass end
+  panel; below 0.7 the detector also fires on fish printed on the backdrops, objects outside the
+  tank and fish+reflection boxes.
+* Square crop (box long side + 10%) at full resolution, named like the existing aquarium images:
+  `fish_<id>_<video>_<frame>_bbox.jpg`.
+* The same number of images per individual, spread evenly over its videos (backdrops), random
+  within a video, at least 2 s apart. Detections and candidate crops are cached
+  (`data/reid_aquarium_cache/`), so re-sampling with other settings takes seconds.
+
+Built in Nov 2026 as 11 fish x 120 images (fish 54 left out: only three short videos, ~80 usable
+images at 2 s spacing):
+
+```bash
+reeftrack reid-aquarium background_var_experiments.csv --out data/reid_datasets/background_experiment \
+  --rfs-dir /Volumes/RFS/triggerfish_individual_id/Datasets/background_experiment \
+  --n 120 --min-gap 2 --exclude-fish 54 --conf-keep 0.7
+rsync -a data/reid_datasets/background_experiment/ /Volumes/RFS/triggerfish_individual_id/Datasets/background_experiment/
+bash scripts/jasmin/push_dataset.sh data/reid_datasets/background_experiment   # -> JASMIN .../triggerfish-id/data/
+```
+
+Build locally, then copy: writing ~1,300 files straight to RFS failed once when the share's login
+expired mid-run.

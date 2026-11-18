@@ -133,10 +133,14 @@ class Tracklet:
             "segments": [asdict(s) for s in self.segments],
             "observations": [asdict(self.obs[f]) for f in self.frames()],
         }
+        # masks first, under a temporary name: a dropped connection never leaves a half-written file
+        tmp = folder / "masks.npz.tmp"
+        with open(tmp, "wb") as fh:
+            np.savez_compressed(fh, **{f"m{f}": r for f, r in self.masks.items()})
+        tmp.replace(folder / "masks.npz")
         tmp = folder / "tracklet.json.tmp"
         tmp.write_text(json.dumps(doc, indent=1))
         tmp.replace(folder / "tracklet.json")
-        np.savez_compressed(folder / "masks.npz", **{f"m{f}": r for f, r in self.masks.items()})
         if fmap is not None:
             self.export_csv(folder / "tracklet.csv", fmap)
 

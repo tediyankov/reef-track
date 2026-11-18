@@ -27,3 +27,12 @@ def autocast_dtype(device: str):
         major, _ = torch.cuda.get_device_capability()
         return torch.bfloat16 if major >= 8 else torch.float16
     return torch.float32
+
+
+def tracking_available() -> bool:
+    """True if the mask-tracking libraries (PyTorch + transformers) are installed. The lightweight
+    annotator environment has neither, so the GUI then offers behaviour/loop annotation only.
+    Checked without importing them (importing torch takes seconds)."""
+    from importlib.util import find_spec
+
+    return find_spec("torch") is not None and find_spec("transformers") is not None

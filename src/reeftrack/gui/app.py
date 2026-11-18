@@ -9,7 +9,7 @@ Workflow
      the next break, scrub until the fish is back, click it again -> new segment that also
      tracks *backwards* to close the gap from the other side.
   4. Clicking a frame that is already tracked corrects it from that frame on.
-  Tracklets autosave to <run>/tracking/ after every change.
+  Tracklets autosave to <run>/tracking/ after every change (library videos: tracking_<annotator>/).
 
 Behaviour annotation (Behaviour tab; can run alongside tracking, or alone with --behaviour-only)
   I at the first frame of a behaviour, O at the last frame -> a dialog asks for the
@@ -139,7 +139,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.config_path = config_path
         self.library = library  # annotate videos from the shared library (hard drive + RFS)
-        self.behaviour_only = behaviour_only or library
+        # library videos can be mask-tracked too when the full environment (PyTorch) is installed;
+        # the lightweight annotator install gets behaviour/loop annotation only
+        if library and not behaviour_only:
+            from reeftrack.devices import tracking_available
+
+            behaviour_only = not tracking_available()
+        self.behaviour_only = behaviour_only
         self.blog = None  # BehaviourLog of the open run
         self.marks: list[int | None] = [None, None]  # behaviour start / end being marked
         self.loops = None  # LoopLog of the open run
@@ -493,22 +499,21 @@ class MainWindow(QMainWindow):
         root = self.run.root
         self.cfg = self.run.config(self.config_path)
         self.fmap = self.run.frame_map()
+        if not self.annotator_name and self.cfg.annotation.annotator:
+            self.annotator_name = self.cfg.annotation.annotator
+        if self.run.is_library:
+            if not self._ensure_annotator():
+                QMessageBox.warning(self, "Name needed", "Annotations are saved per annotator, so a name is needed.")
+                return
+            self.run.annotator = self.annotator_name  # masks go to tracking_<name>/, like behaviours_<name>.csv
         if self.reader:
             self.reader.close()
         self.reader = (RawFrameReader(self.run.proxy, self.fmap.stride) if self.run.video_is_raw
                        else FrameReader(self.run.proxy))
         if self.behaviour_only:  # no tracking model: don't import torch/transformers at all
-            from reeftrack.tracking.tracklet import Tracklet
-
-            tracklet = Tracklet.load(self.run.tracking_dir) if (self.run.tracking_dir / "tracklet.json").exists() else None
-            self.session = TrackingSession(self.reader, self.cfg.tracking, tracklet, run=self.run)
+            self.session = TrackingSession(self.reader, self.cfg.tracking, self._load_tracklet(), run=self.run)
         else:
-            self.session = TrackingSession.from_run(self.run, self.cfg)
-        if not self.annotator_name and self.cfg.annotation.annotator:
-            self.annotator_name = self.cfg.annotation.annotator
-        if self.run.is_library and not self._ensure_annotator():
-            QMessageBox.warning(self, "Name needed", "Annotations are saved per annotator, so a name is needed.")
-            return
+            self.session = TrackingSession.from_run(self.run, self.cfg, frames=self.reader)
         self._load_logs()
         self.zoom, self.zoom_on = None, False
         self._sync_zoom_button()
@@ -523,8 +528,9 @@ class MainWindow(QMainWindow):
         self.rotation = int(meta.get("view", {}).get("rotation", 0)) % 360
         if self.run.is_library:
             src = "original video (slower)" if self.run.video_is_raw else "compressed copy"
+            track = "" if self.behaviour_only else f"<br>masks: {self.run.tracking_dir.name}/ · tracker: {self.cfg.tracking.backend}"
             self.info.setText(f"<b>{meta['source']['rel']}</b><br>{self.n} frames @ {self.fmap.proxy_fps:.2f} fps · "
-                              f"playing the {src}<br>saving to: {self.run.root}")
+                              f"playing the {src}<br>saving to: {self.run.root}{track}")
             self.setWindowTitle(f"reef-track — {meta['source']['rel']}")
         else:
             self.info.setText(f"<b>{self.run.root.name}</b><br>{Path(meta['source']['path']).name} · source frames "
@@ -992,6 +998,16 @@ class MainWindow(QMainWindow):
         self.render()
 
     # ------------------------------------------------------------------ behaviour annotation
+    def _load_tracklet(self):
+        """The open run's saved tracklet (library runs: this annotator's), or None."""
+        from reeftrack.tracking.tracklet import Tracklet
+
+        try:
+            d = self.run.tracking_dir
+        except ValueError:  # several annotators' tracking and none chosen
+            return None
+        return Tracklet.load(d) if (d / "tracklet.json").exists() else None
+
     def _ensure_annotator(self, force: bool = False) -> bool:
         if self.annotator_name and not force:
             return True
@@ -1005,6 +1021,12 @@ class MainWindow(QMainWindow):
                 self._load_logs()  # files are per annotator: switch to this person's files
                 self.refresh_behaviours()
                 self.refresh_loops()
+                if self.session is not None and not (self.worker and self.worker.isRunning()):
+                    from reeftrack.tracking.tracklet import Tracklet
+
+                    self.run.annotator = self.annotator_name  # ... and to this person's masks
+                    self.session.tracklet = self._load_tracklet() or Tracklet(shape=self.session.shape)
+                    self.refresh_tracklet()
                 self.render()
         self._update_active_label()
         return bool(self.annotator_name)
@@ -1232,7 +1254,11 @@ class MainWindow(QMainWindow):
             self.save_banner.setText(
                 "⚠ Could not save to the shared folder (is RFS connected?). Your work is safe in a backup on "
                 f"this laptop ({errs[0].backup.parent}) and will be saved to RFS on your next change or Ctrl+S.")
-        self.save_banner.setVisible(bool(errs))
+        elif getattr(self, "tracking_save_error", None):
+            self.save_banner.setText(
+                "⚠ Could not save the masks (is the annotations folder reachable?). Don't close the window: they are "
+                "kept here and saved on your next change or Ctrl+S.")
+        self.save_banner.setVisible(bool(errs) or bool(getattr(self, "tracking_save_error", None)))
 
     # ------------------------------------------------------------------ shared video library
     def library_settings(self) -> bool:
@@ -1454,8 +1480,12 @@ class MainWindow(QMainWindow):
     def save(self) -> None:
         if not self.run:
             return
+        self.tracking_save_error = None
         if self.session and self.session.tracklet.segments:
-            self.session.save()
+            try:
+                self.session.save()
+            except OSError as e:  # shared folder unreachable: keep the masks in memory, retry next save
+                self.tracking_save_error = str(e)
         for lg in (self.blog, self.loops):
             if lg is not None and lg.events:
                 lg.save()

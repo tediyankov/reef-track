@@ -98,7 +98,7 @@ def compare(run, mono: str = "recon", stereo: str = "recon_stereo", window_s: fl
 
     pm = o3d.io.read_point_cloud(str(dm / "reef.ply"))
     ps = o3d.io.read_point_cloud(str(ds / "reef.ply"))
-    pm.transform(M)  # mono -> stereo frame, metres
+    pm.transform(M)  # mono -> stereo frame, metre
     d_ms = np.asarray(pm.compute_point_cloud_distance(ps))
     d_sm = np.asarray(ps.compute_point_cloud_distance(pm))
     Pm, Ps = np.asarray(pm.points), np.asarray(ps.points)

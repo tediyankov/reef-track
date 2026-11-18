@@ -369,6 +369,9 @@ def sync_annotations(src: str | Path, dst: str | Path, dry_run: bool = False, lo
       newer and different; never replaced by an older copy.
     * run.yaml / config.yaml: copied only if the video folder is new in `dst`, and the frame
       layout must agree if it already exists there (otherwise the folder is skipped).
+    * mask tracking (`tracking_<name>/`: tracklet.json + masks.npz + tracklet.csv): copied as one
+      unit, by the same rule as the CSVs (judged on tracklet.json), masks before tracklet.json so
+      the destination never pairs a new tracklet.json with old masks.
     Returns counts per action.
     """
     import filecmp
@@ -407,6 +410,26 @@ def sync_annotations(src: str | Path, dst: str | Path, dry_run: bool = False, lo
             counts[action] += 1
             if not dry_run:
                 _copy(f, g)
+        for t_src in sorted(d for d in d_src.glob("tracking_*") if (d / "tracklet.json").is_file()):
+            t_dst = d_dst / t_src.name
+            j_src, j_dst = t_src / "tracklet.json", t_dst / "tracklet.json"
+            if not j_dst.exists():
+                action = "copied"
+            elif filecmp.cmp(j_src, j_dst, shallow=False):
+                counts["same"] += 1
+                continue
+            elif j_src.stat().st_mtime > j_dst.stat().st_mtime:
+                action = "updated"
+            else:
+                log(f"KEEP   {rel}/{t_src.name}/: the destination copy is newer")
+                counts["kept_newer_in_dest"] += 1
+                continue
+            log(f"{'WOULD ' if dry_run else ''}{action.upper():7s} {rel}/{t_src.name}/")
+            counts[action] += 1
+            if not dry_run:
+                for name in ("masks.npz", "tracklet.csv", "tracklet.json"):  # tracklet.json last
+                    if (t_src / name).exists():
+                        _copy(t_src / name, t_dst / name)
     return counts
 
 

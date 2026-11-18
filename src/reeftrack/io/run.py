@@ -64,6 +64,8 @@ class Run:
     # run folder: the GUI plays a compressed copy or the original, set here at open time.
     video: Path | None = None
     video_is_raw: bool = False  # True: `video` is the original (read with RawFrameReader)
+    # Library runs: whose tracking this handle reads/writes (`tracking_<name>/`, one per annotator).
+    annotator: str | None = None
 
     # ---- canonical paths -------------------------------------------------
     @property
@@ -93,7 +95,23 @@ class Run:
 
     @property
     def tracking_dir(self) -> Path:
-        return self.root / "tracking"
+        """Where the fish tracklet lives. Normal runs: `tracking/`. Library runs: one folder per
+        annotator (`tracking_<name>/`, like `behaviours_<name>.csv`), so two people tracking the
+        same video never overwrite each other. Without an annotator set, a library run uses its only
+        tracking folder (and asks you to choose when there are several)."""
+        if not self.is_library:
+            return self.root / "tracking"
+        if self.annotator:
+            return self.root / f"tracking_{slugify(self.annotator)}"
+        found = self.tracking_dirs()
+        if len(found) > 1:
+            raise ValueError(f"{self.root} has tracking from several annotators "
+                             f"({', '.join(d.name for d in found)}); set Run.annotator to choose one")
+        return found[0] if found else self.root / "tracking"
+
+    def tracking_dirs(self) -> list[Path]:
+        """Every saved tracklet folder in this run (library runs: one per annotator)."""
+        return sorted(d for d in self.root.glob("tracking*") if (d / "tracklet.json").exists())
 
     @property
     def proxy_right(self) -> Path:
@@ -109,7 +127,7 @@ class Run:
         return self.root / f"fusion{suffix}"
 
     def variant(self, recon_name: str) -> Run:
-        return Run(self.root, recon_name, self.video, self.video_is_raw)
+        return Run(self.root, recon_name, self.video, self.video_is_raw, self.annotator)
 
     # ---- metadata --------------------------------------------------------
     def meta(self) -> dict[str, Any]:

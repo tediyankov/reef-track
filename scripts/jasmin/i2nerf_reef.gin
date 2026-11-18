@@ -1,0 +1,35 @@
+# I2-NeRF on reef-track exports (default mode): their configs/SeaThru/llff_uw.gin, with changes
+#   * forward_facing = False + power-transformation ray spacing (as in their configs/360.gin):
+#     diver loops turn around, so use ZipNeRF's unbounded scene instead of LLFF's forward-facing
+#     NDC. The medium model does not depend on it, but the authors only tested forward-facing
+#     underwater scenes: if this mode fails, use reef_uw_ff.gin (I2_MODE=ff)
+#   * factor = 0: the export is already at training resolution (images/, 960x540)
+#   * near / far: set per scene by train_i2nerf.sbatch from the export's measured reef depths
+# (also fixes the 'COnfig.project_name' typo in the original file)
+Config.project_name = 'media-nerf'
+Config.dataset_loader = 'llff'
+Config.forward_facing = False
+Config.factor = 0
+Config.llffhold = 8
+Config.llff_use_all_images_for_testing = False
+Config.adam_eps = 1e-8
+Config.data_loss_type = 'rawnerf'
+Config.batch_size = 8192
+Config.enable_scatter = True
+Config.enable_spatial_media = False
+Config.enable_downwell_depth = True
+Config.bs_acc_mult = 0.0001
+Config.max_steps = 20000
+
+Model.opaque_background = False
+Model.raydist_fn = 'power_transformation'
+Model.num_levels = 2
+Model.num_prop_samples = 128
+Model.num_nerf_samples = 32
+Model.num_extra_media_samples = 32
+
+PropMLP.disable_density_normals = True
+PropMLP.disable_rgb = True
+NerfMLP.disable_density_normals = True
+NerfMLP.max_deg_point = 16
+PropMLP.max_deg_point = 16

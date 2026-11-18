@@ -265,6 +265,7 @@ def test_gui_library_annotation(tmp_path, monkeypatch):
 
     monkeypatch.setattr(BehaviourDialog, "exec", lambda self: (self.list.setCurrentRow(1),
                                                                BehaviourDialog.DialogCode.Accepted)[1])
+    monkeypatch.setattr("reeftrack.devices.tracking_available", lambda: False)  # the light annotator install
     qapp = QApplication.instance() or QApplication([])
     win = gui_app.MainWindow(library=True)
     win.annotator_name = "Anna"
@@ -418,6 +419,81 @@ def test_gui_offline_compressed_video(tmp_path, monkeypatch):
     rows = list(csv.DictReader(open(win.run.root / "behaviours_anna.csv")))
     assert rows[0]["behaviour"] == "Foraging" and rows[0]["source_video"] == REL
     win.close()
+
+
+@pytest.mark.gui
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg needed")
+def test_gui_library_mask_tracking_saved_per_annotator(tmp_path, monkeypatch):
+    """Full environment + library video: masks are saved in the video's annotation folder as
+    tracking_<name>/ (local first), then `sync_annotations` carries them to the shared folder."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from reeftrack.gui import app as gui_app
+    from reeftrack.library import Library, LibrarySettings, sync_annotations
+    from reeftrack.tracking import session as session_mod
+    from reeftrack.tracking.backends import FakeBackend
+    from tests.test_library import REL, _write_video
+
+    monkeypatch.setenv("REEFTRACK_HOME", str(tmp_path / "home"))
+    drive, rfs = tmp_path / "drive" / "originaldata", tmp_path / "RFS"
+    for d in (drive, rfs / "compressed_videos", rfs / "annotations"):
+        d.mkdir(parents=True)
+    server = Library(LibrarySettings(video_root=str(drive), compressed_root=str(rfs / "compressed_videos"),
+                                     annotations_root=str(rfs / "annotations"), cache_dir=str(tmp_path / "c"),
+                                     height=240, bitrate="2M"))
+    _write_video(drive / REL)
+    out = server.compress(drive / REL)
+    got = tmp_path / "Downloads"
+    got.mkdir()
+    shutil.copy(out, got / out.name)
+    shutil.copy(server.sidecar_path(server.rel(drive / REL)), got)
+    local = tmp_path / "laptop_annotations"
+    local.mkdir()
+    LibrarySettings(video_root="", compressed_root="", annotations_root=str(local)).save()
+
+    monkeypatch.setattr("reeftrack.devices.tracking_available", lambda: True)
+    # the synthetic clip is plain grey: 'track' the whole frame
+    monkeypatch.setattr(session_mod, "load_backend", lambda tc, device: FakeBackend((128, 128, 128), tol=255))
+    qapp = QApplication.instance() or QApplication([])
+    win = gui_app.MainWindow(library=True)
+    assert not win.behaviour_only  # tracking is offered on library videos
+    win.annotator_name = "Rosie"
+    win.open_compressed(got / out.name)
+    win.worker.wait(5000)
+    qapp.processEvents()
+    assert win.tabs.isTabEnabled(0) and win.run.annotator == "Rosie"
+    win.goto(2)
+    win._on_click(160, 120, Qt.MouseButton.LeftButton)
+    win.worker.wait(5000)
+    qapp.processEvents()
+    win.commit_click()
+    win.worker.wait(10000)
+    qapp.processEvents()
+    folder = win.run.root / "tracking_rosie"
+    assert win.session.tracklet.segments and (folder / "tracklet.json").exists()
+    assert (folder / "masks.npz").exists() and (folder / "tracklet.csv").exists()
+    assert not (win.run.root / "tracking").exists()
+    assert win.n == 30 and tuple(win.session.tracklet.shape) == (240, 320)  # compressed copy's size
+    win.close()
+
+    # reopening as someone else starts from their own (empty) tracking; reopening as Rosie restores hers
+    from reeftrack.io.run import Run
+
+    run = Run.open(local / "Maldives/2024_02_14/AM/Cait/Left/GX010703")
+    assert run.tracking_dir == folder  # the only annotator's tracking is picked without asking
+    run.annotator = "Ben"
+    assert run.tracking_dir.name == "tracking_ben"
+
+    # later: bulk transfer to the shared annotations folder
+    shared = rfs / "annotations"
+    counts = sync_annotations(local, shared, log=lambda *_: None)
+    dst = shared / "Maldives/2024_02_14/AM/Cait/Left/GX010703/tracking_rosie"
+    assert counts["copied"] >= 1 and (dst / "tracklet.json").exists() and (dst / "masks.npz").exists()
+    assert (dst / "tracklet.json").read_bytes() == (folder / "tracklet.json").read_bytes()
+    assert not list(shared.rglob("*.partial"))
+    assert sync_annotations(local, shared, log=lambda *_: None)["copied"] == 0  # idempotent
 
 
 @pytest.mark.gui

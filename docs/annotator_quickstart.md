@@ -79,6 +79,36 @@ You can annotate without RFS, using a compressed video someone sends you:
 5. When RFS works again, the maintainer copies everything across with one command
    (`reeftrack sync-annotations`), or you can zip your annotations folder and send it to them.
 
+## Mask tracking (optional, for people who also outline the fish)
+
+The **Annotate fish videos** icon is annotation-only: it installs a small toolkit without the AI
+tracker. To track fish masks in the same window:
+
+1. **Install once** (about 30 minutes, ~6 GB): same as step 2 above, but use
+   `install_tracking_mac.command` (Mac, run from Terminal with `bash `) or
+   `install_tracking_windows.bat` (Windows). You get a second Desktop icon, **Track fish videos**.
+   Tracking is quick on an Apple Silicon Mac; on a laptop without an NVIDIA GPU (most Windows
+   laptops, Intel Macs) it runs on the CPU and is slow.
+2. Double-click **Track fish videos** and open a video exactly as above (from the hard drive, or
+   **File → Open compressed video…**). The **Tracking** tab is now enabled.
+3. Click the fish to start a mask, then let it track. For a tiny fish, drag a box around it to zoom
+   (**Z**/**Esc** to go back), **E** cycles image enhancement, **V** lets you drag the mask's points
+   and re-track from the corrected mask. The first click downloads the tracking model once.
+4. Masks save automatically into the video's annotation folder, next to your CSVs, as
+   `tracking_<your name>/` (`tracklet.json`, `masks.npz`, and `tracklet.csv` with one row per frame).
+   Each person has their own folder, so two people tracking the same video never overwrite each other.
+
+**Saving locally first, copying to RFS later.** Set **Annotations** (File → Library folders…) to a
+folder on your laptop, e.g. `Documents/fish_in_the_wild_annotations`. Everything (CSVs and
+`tracking_<name>/` folders) is saved there in the same sub-folders it will have on RFS. To copy it
+across later (never overwrites anything newer on RFS; `--dry-run` first shows what it would do):
+
+```bash
+reeftrack sync-annotations ~/Documents/fish_in_the_wild_annotations "/Volumes/RFS/Triggerfish Navigation/fish_in_the_wild/annotations" --dry-run
+```
+
+Until then the laptop holds the only copy: back the folder up (e.g. zip it to OneDrive) now and then.
+
 ## If something goes wrong
 
 * *"is not inside the original-videos folder"*: pick the video from the hard drive's
