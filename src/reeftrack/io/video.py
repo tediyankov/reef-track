@@ -13,6 +13,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 from fractions import Fraction
@@ -204,11 +205,18 @@ class FrameReader:
         self._next = 0  # index the decoder will return on the next read()
         self._cache: OrderedDict[int, np.ndarray] = OrderedDict()
         self._cache_size = cache_size
+        # one decoder, shared by the GUI thread and the tracking thread: OpenCV/FFmpeg crash the
+        # whole process (bus error / abort) if two threads seek or decode it at the same time
+        self._lock = threading.RLock()
 
     def __len__(self) -> int:
         return self.n_frames
 
     def __getitem__(self, idx: int) -> np.ndarray:
+        with self._lock:
+            return self._read(idx)
+
+    def _read(self, idx: int) -> np.ndarray:
         if not 0 <= idx < self.n_frames:
             raise IndexError(idx)
         if idx in self._cache:
@@ -227,7 +235,8 @@ class FrameReader:
         return rgb
 
     def close(self) -> None:
-        self._cap.release()
+        with self._lock:
+            self._cap.release()
 
     def __enter__(self) -> FrameReader:
         return self
@@ -250,7 +259,7 @@ class RawFrameReader(FrameReader):
         self.max_height = max_height
         self._next_src = 0
 
-    def __getitem__(self, idx: int) -> np.ndarray:
+    def _read(self, idx: int) -> np.ndarray:
         cv2 = self._cv2
         if not 0 <= idx < self.n_frames:
             raise IndexError(idx)

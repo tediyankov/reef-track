@@ -115,3 +115,31 @@ def test_tracker_choice_comes_from_this_computer_not_the_snapshot(tmp_path):
     assert got.tracking.patience == 7  # other tracking settings still come from the snapshot
     over = run.config({"tracking": {"backend": "sam2", "device": "cpu"}})
     assert (over.tracking.backend, over.tracking.device) == ("sam2", "cpu")
+
+
+def test_frame_reader_shared_by_two_threads(tmp_path):
+    """The GUI thread and the tracking thread read the same video: every read must return the
+    right frame and never crash the decoder (unguarded, concurrent seeks abort the process)."""
+    import random
+    import threading
+
+    from reeftrack.io.video import FrameReader
+    from tests.test_library import _write_video
+
+    _write_video(tmp_path / "v.mp4", n=60, fps=30)  # frame i has brightness 2*i
+    reader = FrameReader(tmp_path / "v.mp4", cache_size=2)  # tiny cache: almost every read decodes
+    errors = []
+
+    def hammer(seed):
+        rng = random.Random(seed)
+        for _ in range(150):
+            i = rng.randrange(len(reader))
+            if abs(float(reader[i].mean()) - 2 * i) > 6:
+                errors.append(i)
+
+    threads = [threading.Thread(target=hammer, args=(s,)) for s in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors

@@ -118,10 +118,16 @@ class Worker(QThread):
     done = Signal(object)
     failed = Signal(str)
 
+    # Qt gives threads only 512 KB of stack on macOS. Some maths libraries need far more (numpy
+    # 1.x's OpenBLAS overflows it in np.linalg.solve -> "bus error" when tracking starts), so use
+    # what Python gives its own threads and more.
+    STACK_BYTES = 32 * 1024 * 1024
+
     def __init__(self, fn, parent=None):
         super().__init__(parent)
         self._fn = fn
         self._stop = False
+        self.setStackSize(self.STACK_BYTES)
 
     def stop(self) -> None:
         self._stop = True

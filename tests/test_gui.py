@@ -552,3 +552,22 @@ def test_gui_rotate_view(tmp_path, occlusion_video):
     assert again.rotation == 270
     again.close()
     qapp.processEvents()
+
+
+def test_worker_threads_get_a_large_stack():
+    """Qt's default macOS thread stack (512 KB) is overflowed by numpy 1.x's OpenBLAS inside
+    np.linalg.solve (the tracker's motion gate) -> 'bus error' the moment tracking starts."""
+    import numpy as np
+    from PySide6.QtWidgets import QApplication
+
+    from reeftrack.gui.app import Worker
+
+    qapp = QApplication.instance() or QApplication([])
+    w = Worker(lambda emit, stop: float(np.linalg.solve(np.array([[4.0, 1.0], [1.0, 3.0]]), np.ones(2)).sum()))
+    assert w.stackSize() >= 16 * 1024 * 1024
+    got = []
+    w.done.connect(got.append)
+    w.start()
+    assert w.wait(10_000)
+    qapp.processEvents()
+    assert got and np.isfinite(got[0])  # ran to completion
