@@ -160,6 +160,12 @@ class Run:
             # The behaviour vocabulary is project-wide, not part of a run's provenance: always use
             # the current list, so runs created before an ethogram update get the new categories.
             snapshot.pop("annotation", None)
+            # Which tracker model and compute device to use is this computer's choice (SAM 3 needs
+            # Hugging Face access, a Mac may need sam2 or cpu), not part of the video's history:
+            # always take it from configs/default.yaml (or -c), never from the snapshot.
+            if isinstance(snapshot.get("tracking"), dict):
+                for key in ("backend", "device"):
+                    snapshot["tracking"].pop(key, None)
             dropped = drop_unknown_keys(snapshot)
             if dropped:
                 logging.getLogger(__name__).warning("ignoring obsolete config keys in %s: %s", self.config_path, dropped)

@@ -98,3 +98,20 @@ def test_old_run_snapshot_with_obsolete_keys_still_loads(tmp_path):
     snap["tracking"]["patience"] = 7
     run.config_path.write_text(yaml.safe_dump(snap))
     assert run.config().tracking.patience == 7
+
+
+def test_tracker_choice_comes_from_this_computer_not_the_snapshot(tmp_path):
+    """Switching to sam2 / cpu in configs/default.yaml (or -c) applies to videos already opened."""
+    import yaml
+
+    cfg = load_config()
+    Run.create(tmp_path / "r", tmp_path / "v.mp4", FrameMap(0, 1, 5, 30.0), cfg)
+    run = Run.open(tmp_path / "r")
+    snap = yaml.safe_load(run.config_path.read_text())
+    snap["tracking"].update(backend="sam2" if cfg.tracking.backend == "sam3" else "sam3", device="cuda", patience=7)
+    run.config_path.write_text(yaml.safe_dump(snap))
+    got = run.config()
+    assert (got.tracking.backend, got.tracking.device) == (cfg.tracking.backend, cfg.tracking.device)
+    assert got.tracking.patience == 7  # other tracking settings still come from the snapshot
+    over = run.config({"tracking": {"backend": "sam2", "device": "cpu"}})
+    assert (over.tracking.backend, over.tracking.device) == ("sam2", "cpu")
