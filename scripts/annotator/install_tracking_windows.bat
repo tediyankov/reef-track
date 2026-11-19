@@ -29,6 +29,12 @@ if exist "%ENV%\python.exe" (
 )
 "%ENV%\python.exe" -m pip install -q -e "%REPO%" --no-deps || goto :error
 
+REM check nothing silently failed (conda keeps a half-built environment if the pip step breaks)
+"%ENV%\Scripts\reeftrack.exe" check-install || goto :error
+REM download the tracking model now, so the first click on a fish doesn't wait for a download
+echo Downloading the tracking model (one-off, can take several minutes)...
+"%ENV%\Scripts\reeftrack.exe" fetch-models || echo Model download failed; the GUI will retry when you first track a fish.
+
 set "LAUNCHER=%USERPROFILE%\Desktop\Track fish videos.bat"
 (
   echo @echo off

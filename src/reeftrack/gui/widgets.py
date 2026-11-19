@@ -232,8 +232,16 @@ class Timeline(QWidget):
     def set_lane(self, name: str, events, pending=None, gaps=None) -> None:
         """events: (start, end, rgb[, event_id]) tuples; gaps: (start, end) ranges to show hatched."""
         self.lanes[name] = [events, pending]
+        self.setMinimumHeight(96 + 20 * max(0, len(self.lanes) - 2))  # keep the tracking bar visible
         if gaps is not None:
             self.lane_gaps[name] = gaps
+        self.update()
+
+    def remove_lane(self, name: str) -> None:
+        self.lanes.pop(name, None)
+        self.lane_gaps.pop(name, None)
+        self._layout.pop(name, None)
+        self.setMinimumHeight(96 + 20 * max(0, len(self.lanes) - 2))
         self.update()
 
     def set_highlight(self, name: str, event_id) -> None:

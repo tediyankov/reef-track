@@ -166,3 +166,49 @@ class Tracklet:
                 w.writerow([f, fmap.to_source(f), f"{fmap.time_s(f):.4f}", o.segment_id,
                             f"{o.centroid[0]:.1f}", f"{o.centroid[1]:.1f}", *o.bbox, o.area,
                             f"{o.presence_logit:.3f}", f"{o.appearance_sim:.3f}"])
+
+
+# ---- library runs: shared folder (e.g. RFS) + a local safety copy -------------------------------
+def _backup_dir(run) -> Path | None:
+    from reeftrack.annotation.events import backup_path
+
+    return backup_path(run, run.tracking_dir)
+
+
+def load_for_run(run) -> tuple[Tracklet | None, bool]:
+    """(the run's tracklet or None, restored_from_backup). Library runs keep a local copy of the
+    masks, written before the shared folder on every save (like the annotation CSVs). If the
+    shared folder was unreachable last time, the newer local copy wins and is pushed back."""
+    try:
+        shared = run.tracking_dir
+    except ValueError:  # several annotators' tracking in a library run and none chosen
+        return None, False
+    backup = _backup_dir(run)
+    have = [d for d in (shared, backup) if d is not None and (d / "tracklet.json").exists()]
+    if not have:
+        return None, False
+    src = max(have, key=lambda d: ((d / "tracklet.json").stat().st_mtime, d == shared))  # tie -> shared
+    tr = Tracklet.load(src)
+    if src != shared:
+        try:
+            save_for_run(tr, run)
+        except OSError:
+            pass  # still unreachable: the local copy keeps everything
+        return tr, True
+    return tr, False
+
+
+def save_for_run(tracklet: Tracklet, run) -> None:
+    """Save to the local copy first (library runs), then the shared folder. Raises OSError if the
+    shared folder can't be written; nothing is lost, the local copy has every change."""
+    import os
+
+    fmap = run.frame_map()
+    backup = _backup_dir(run)
+    if backup is not None:
+        tracklet.save(backup, fmap)
+    shared = run.tracking_dir
+    tracklet.save(shared, fmap)
+    if backup is not None:  # equal timestamps -> the shared copy counts as newest
+        st = (shared / "tracklet.json").stat()
+        os.utime(backup / "tracklet.json", (st.st_atime, st.st_mtime))

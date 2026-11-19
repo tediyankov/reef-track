@@ -26,3 +26,22 @@ def occlusion_video() -> list[np.ndarray]:
             f[30:90, 60:140] = (120, 110, 90)  # coral block
         frames.append(f)
     return frames
+
+
+@pytest.fixture(autouse=True)
+def _no_blocking_dialogs(monkeypatch):
+    """A message box in a GUI test would wait forever for a click (hanging the whole run).
+    Make every one fail loudly instead, with its text, so the test shows what went wrong."""
+    try:
+        from PySide6.QtWidgets import QMessageBox
+    except ImportError:
+        yield
+        return
+
+    def fail(*args, **_):
+        text = " | ".join(str(a) for a in args[1:3])
+        raise RuntimeError(f"unexpected dialog in a test: {text}")
+
+    for name in ("warning", "critical", "information", "question"):
+        monkeypatch.setattr(QMessageBox, name, staticmethod(fail))
+    yield

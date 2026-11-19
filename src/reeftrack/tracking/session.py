@@ -40,7 +40,7 @@ from reeftrack.tracking.masks import area, bbox, centroid, largest_component
 from reeftrack.tracking.polygon import Polygon, polygon_to_mask
 from reeftrack.tracking.quality import FrameSignals, LossDetector, Verdict
 from reeftrack.tracking.roi import Rect, centre_of, crop, paste, rect_at
-from reeftrack.tracking.tracklet import Observation, Segment, Tracklet
+from reeftrack.tracking.tracklet import Observation, Segment, Tracklet, load_for_run, save_for_run
 
 log = logging.getLogger(__name__)
 
@@ -88,9 +88,7 @@ class TrackingSession:
         from reeftrack.io.video import FrameReader
 
         reader = frames if frames is not None else FrameReader(run.proxy)
-        tracklet = None
-        if not fresh and (run.tracking_dir / "tracklet.json").exists():
-            tracklet = Tracklet.load(run.tracking_dir)
+        tracklet = None if fresh else load_for_run(run)[0]
         device = resolve_device(cfg.tracking.device)
         sess = cls(reader, cfg.tracking, tracklet, backend_factory=lambda: load_backend(cfg.tracking, device), run=run)
         sess.tracklet.meta.update({"config_digest": cfg.digest(), "device": device})
@@ -182,7 +180,7 @@ class TrackingSession:
     def save(self) -> None:
         if self.run is None:
             raise RuntimeError("session has no run to save into")
-        self.tracklet.save(self.run.tracking_dir, self.run.frame_map())
+        save_for_run(self.tracklet, self.run)  # library runs: local copy first, then the shared folder
 
     # ---- internals -----------------------------------------------------------
     def _make_room(self, frame_idx: int) -> None:

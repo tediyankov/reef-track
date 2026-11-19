@@ -43,6 +43,19 @@ else
 fi
 "$ENV/bin/python" -m pip install -q -e "$REPO" --no-deps
 
+# check nothing silently failed (conda keeps a half-built environment if the pip step breaks)
+if ! "$ENV/bin/reeftrack" check-install; then
+  echo
+  echo "Setup is incomplete (see MISSING above). Check the internet connection and run this script again."
+  echo "If it keeps failing, send a screenshot of this window to the reef-track maintainer."
+  exit 1
+fi
+
+# download the tracking model now (SAM 3 ~3.4 GB if you have access, else SAM 2.1 ~0.2 GB),
+# so the first click on a fish doesn't wait for a download
+echo "Downloading the tracking model (one-off, can take several minutes)..."
+"$ENV/bin/reeftrack" fetch-models || echo "Model download failed; the GUI will retry when you first track a fish."
+
 # --- 3. Desktop launcher ------------------------------------------------------------------
 LAUNCHER="$HOME/Desktop/Track fish videos.command"
 cat > "$LAUNCHER" <<EOF

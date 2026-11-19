@@ -87,16 +87,43 @@ tracker. To track fish masks in the same window:
 1. **Install once** (about 30 minutes, ~6 GB): same as step 2 above, but use
    `install_tracking_mac.command` (Mac, run from Terminal with `bash `) or
    `install_tracking_windows.bat` (Windows). You get a second Desktop icon, **Track fish videos**.
+   The installer checks every package installed properly (it stops with a **MISSING** list if not:
+   just run it again) and downloads the tracking model, so the first click on a fish is quick.
+   For the better SAM 3 model, first request access at <https://huggingface.co/facebook/sam3> and run
+   `hf auth login`; without it the tool uses SAM 2.1.
    Tracking is quick on an Apple Silicon Mac; on a laptop without an NVIDIA GPU (most Windows
    laptops, Intel Macs) it runs on the CPU and is slow.
 2. Double-click **Track fish videos** and open a video exactly as above (from the hard drive, or
    **File → Open compressed video…**). The **Tracking** tab is now enabled.
 3. Click the fish to start a mask, then let it track. For a tiny fish, drag a box around it to zoom
    (**Z**/**Esc** to go back), **E** cycles image enhancement, **V** lets you drag the mask's points
-   and re-track from the corrected mask. The first click downloads the tracking model once.
+   and re-track from the corrected mask. Clicks work once the status bar says **Tracker ready**
+   (a few seconds; several minutes the very first time if the installer couldn't download the model).
 4. Masks save automatically into the video's annotation folder, next to your CSVs, as
    `tracking_<your name>/` (`tracklet.json`, `masks.npz`, and `tracklet.csv` with one row per frame).
    Each person has their own folder, so two people tracking the same video never overwrite each other.
+   Like the CSVs, a copy is also kept on your laptop: if RFS drops, nothing is lost, and the masks
+   reach RFS on your next change, Ctrl+S, or the next time you open the video.
+5. **Other people's labels.** If someone has already labelled this video, their behaviours and
+   loops appear read-only: an extra strip at the bottom of the timeline, and as "Name: label" on the
+   video. **Display → Others' labels** picks everyone, one person, or Off (remembered).
+   **J** / **Shift+J** jump to the next / previous stretch they marked **Out of view**, which is where
+   the mask is expected to drop. Their files are never changed; yours stay in your own files.
+
+**Prepare videos before an annotation session.** Opening a video that has no compressed copy yet
+means waiting about as long as the video while it is compressed (once, then it's quick for everyone).
+Don't use `reeftrack prepare` for this: it does the same slow work again for every clip. Instead,
+compress the videos you'll work on in advance, e.g. overnight, with the hard drive and RFS connected:
+
+```bash
+reeftrack compress-batch "/Volumes/<drive>/originaldata/Maldives/2024_02_14" --dry-run
+```
+
+(drop `--dry-run` to do it). Compressing while you track works too, but both get slower, and on a
+Mac with 16 GB of memory or less it can become sluggish.
+
+**Where to save.** Setting **Annotations** to the RFS folder (`fish_in_the_wild/annotations`) is
+simplest: masks and labels go straight to RFS, and you see everyone else's labels. Alternatively:
 
 **Saving locally first, copying to RFS later.** Set **Annotations** (File → Library folders…) to a
 folder on your laptop, e.g. `Documents/fish_in_the_wild_annotations`. Everything (CSVs and

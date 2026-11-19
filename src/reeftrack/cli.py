@@ -79,6 +79,57 @@ def annotate(
     main(None, config, behaviour_only=behaviour_only, library=True, video=video)
 
 
+@app.command("check-install")
+def check_install(
+    tracking: bool = typer.Option(True, help="Also require the mask-tracking packages (PyTorch, transformers)."),
+) -> None:
+    """Check that every package the GUI needs is importable; exits with an error naming what's missing."""
+    import importlib
+
+    mods = ["numpy", "cv2", "PySide6.QtWidgets", "yaml", "pydantic"]
+    if tracking:
+        mods += ["torch", "torchvision", "transformers", "huggingface_hub"]
+    missing = []
+    for m in mods:
+        try:
+            importlib.import_module(m)
+        except Exception as e:  # ImportError, or a broken binary package
+            missing.append(f"{m} ({str(e).splitlines()[0][:120]})")
+    if missing:
+        typer.echo("MISSING / BROKEN:\n  - " + "\n  - ".join(missing))
+        raise typer.Exit(1)
+    typer.echo("all packages OK")
+
+
+@app.command("fetch-models")
+def fetch_models(config: ConfigOpt = None) -> None:
+    """Download the tracking model(s) now, so the first click in the GUI isn't a multi-minute wait.
+
+    Gets the configured tracker (SAM 3 by default: gated, needs `hf auth login` with access granted)
+    and always the small open SAM 2.1 fallback. Safe to re-run: cached files are not downloaded again."""
+    from huggingface_hub import snapshot_download
+
+    from reeftrack.config import load_config
+
+    tc = load_config(config).tracking
+    wanted = [tc.backend] + (["sam2"] if tc.backend != "sam2" else [])
+    ok = []
+    for name in wanted:
+        repo = tc.model_ids[name]
+        typer.echo(f"{name}: {repo} …")
+        try:
+            snapshot_download(repo, allow_patterns=["*.json", "*.safetensors", "*.txt", "*.model"])
+            ok.append(name)
+            typer.echo(f"{name}: ready")
+        except Exception as e:  # gated repo without access, offline, ...
+            typer.echo(f"{name}: not downloaded ({str(e).splitlines()[0][:160]})")
+            if name == "sam3":
+                typer.echo("  (SAM 3 needs access: request it at https://huggingface.co/facebook/sam3, then run "
+                           "`hf auth login`. Until then the GUI uses SAM 2.1.)")
+    if not ok:
+        raise typer.Exit(1)
+
+
 @app.command()
 def library() -> None:
     """Show the library folders (set them in the GUI: File → Library folders) and check they're reachable."""

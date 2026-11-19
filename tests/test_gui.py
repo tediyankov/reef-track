@@ -458,6 +458,9 @@ def test_gui_library_mask_tracking_saved_per_annotator(tmp_path, monkeypatch):
     monkeypatch.setattr(session_mod, "load_backend", lambda tc, device: FakeBackend((128, 128, 128), tol=255))
     qapp = QApplication.instance() or QApplication([])
     win = gui_app.MainWindow(library=True)
+    from PySide6.QtCore import QSettings
+
+    win.settings = QSettings(str(tmp_path / "gui.ini"), QSettings.Format.IniFormat)  # not the real user settings
     assert not win.behaviour_only  # tracking is offered on library videos
     win.annotator_name = "Rosie"
     win.open_compressed(got / out.name)
@@ -476,6 +479,23 @@ def test_gui_library_mask_tracking_saved_per_annotator(tmp_path, monkeypatch):
     assert (folder / "masks.npz").exists() and (folder / "tracklet.csv").exists()
     assert not (win.run.root / "tracking").exists()
     assert win.n == 30 and tuple(win.session.tracklet.shape) == (240, 320)  # compressed copy's size
+
+    # someone else's labels on this video show read-only: picker, timeline strip, J jumps to 'Out of view'
+    from reeftrack.annotation.behaviour import BehaviourLog
+    from reeftrack.config import DEFAULT_BEHAVIOURS
+
+    assert not win.others_box.isEnabled() and "others" not in win.timeline.lanes
+    cait = BehaviourLog.for_run(win.run, DEFAULT_BEHAVIOURS, "Cait")
+    cait.add("Out of view", 12, 16, annotator="Cait")
+    win._refresh_others()
+    assert win.others_box.isEnabled() and win.others_box.currentData() == "all"
+    assert [e.label for e in win.ref_events] == ["Out of view"] and win.timeline.lanes["others"][0]
+    win.goto(0)
+    win.jump_out_of_view(+1)
+    assert win.cur == 12
+    win.others_box.setCurrentIndex(0)  # Off
+    assert not win.ref_events and "others" not in win.timeline.lanes
+    assert win.blog.path.name == "behaviours_rosie.csv" and not win.blog.events  # hers stay separate
     win.close()
 
     # reopening as someone else starts from their own (empty) tracking; reopening as Rosie restores hers

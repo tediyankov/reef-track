@@ -301,6 +301,13 @@ class MainWindow(QMainWindow):
         self.show_labels.setChecked(True)
         self.show_labels.toggled.connect(lambda _: self.render())
         dv.addRow("Labels", self.show_labels)
+        self.others_box = QComboBox()  # other annotators' labels on this video, read-only
+        self.others_box.setToolTip("Show other people's behaviour and loop labels on this video (read-only: their "
+                                   "files are never changed). Extra strip on the timeline + labels on the video. "
+                                   "J / Shift+J: next / previous stretch they marked 'Out of view'.")
+        self.others_box.currentIndexChanged.connect(self._on_others_changed)
+        self.ref_events: list = []
+        dv.addRow("Others' labels", self.others_box)
         self.btn_zoom = QPushButton("Drag a box around the fish to zoom")
         self.btn_zoom.setCheckable(True)
         self.btn_zoom.setEnabled(False)
@@ -421,6 +428,7 @@ class MainWindow(QMainWindow):
             "I": lambda: self._dispatch("in"), "O": lambda: self._dispatch("out"),
             "[": lambda: self._dispatch("in"), "]": lambda: self._dispatch("out"), "B": lambda: self._dispatch("add"),
             "G": lambda: self.jump_gap(+1), "Shift+G": lambda: self.jump_gap(-1),
+            "J": lambda: self.jump_out_of_view(+1), "Shift+J": lambda: self.jump_out_of_view(-1),
         }
         for k, fn in keys.items():
             QShortcut(QKeySequence(k), self, activated=fn)
@@ -513,8 +521,13 @@ class MainWindow(QMainWindow):
         if self.behaviour_only:  # no tracking model: don't import torch/transformers at all
             self.session = TrackingSession(self.reader, self.cfg.tracking, self._load_tracklet(), run=self.run)
         else:
-            self.session = TrackingSession.from_run(self.run, self.cfg, frames=self.reader)
+            saved = self._load_tracklet()
+            self.session = TrackingSession.from_run(self.run, self.cfg, frames=self.reader, fresh=True)
+            if saved is not None:  # keep the saved masks, with this session's config/device noted
+                saved.meta.update(self.session.tracklet.meta)
+                self.session.tracklet = saved
         self._load_logs()
+        self._refresh_others()
         self.zoom, self.zoom_on = None, False
         self._sync_zoom_button()
         self.timeline.set_length(self.n)
@@ -554,17 +567,37 @@ class MainWindow(QMainWindow):
     def _warmup(self) -> None:
         """Load the SAM weights in the background so the first click is snappy."""
         sess = self.session
-        self.statusBar().showMessage(f"Loading {self.cfg.tracking.backend} weights in the background…")
+        self.warming = True
+        self.statusBar().showMessage(f"Loading the {self.cfg.tracking.backend} tracker… {self._loading_note()}")
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)  # busy indicator: a download gives no progress here
 
         def load(emit, stop):
             return sess.backend.name
 
         def ok(name):
+            self.progress.setVisible(False)
             note = "" if name == self.cfg.tracking.backend else f"  (fell back from {self.cfg.tracking.backend}: no access)"
-            self.statusBar().showMessage(f"Tracker ready: {name}{note}")
+            self.statusBar().showMessage(f"Tracker ready: {name}{note}. Click the fish to start.")
             self.info.setText(self.info.text().rsplit("tracker:", 1)[0] + f"tracker: {name}")
 
         self._start_worker(load, done=ok)
+        self.worker.finished.connect(lambda: setattr(self, "warming", False))
+
+    def _loading_note(self) -> str:
+        """Tell people when the model has to be downloaded first (minutes), not just loaded (seconds)."""
+        tc = self.cfg.tracking
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            cached = isinstance(try_to_load_from_cache(tc.model_ids[tc.backend], "model.safetensors"), str)
+        except Exception:
+            cached = True
+        if cached:
+            return "(a few seconds)"
+        size = {"sam3": "~3.4 GB", "sam2": "~0.2 GB"}.get(tc.backend, "")
+        return (f"First time on this computer: downloading the model ({size}), which can take several minutes. "
+                "Clicks on the fish work once this says 'Tracker ready'.")
 
     # ------------------------------------------------------------------ playback
     def goto(self, f: int, force: bool = False) -> None:
@@ -668,6 +701,10 @@ class MainWindow(QMainWindow):
             for lp in (self.loops.active_at(self.cur) if self.loops else []):
                 where = "start" if self.cur == lp.start_frame else "return" if self.cur == lp.end_frame else "in"
                 labels.append((f"Loop {lp.event_id} ({where})", LOOP_COLOUR))
+            for ev in self.ref_events:  # other annotators' labels (read-only)
+                if ev.contains(self.cur):
+                    colour = behaviour_colour(ev.label, cats) if ev.kind == "behaviours" else LOOP_COLOUR
+                    labels.append((f"{ev.who}: {ev.label}", colour))
             if enh is not None:
                 labels.append((f"Enhanced: {self.enhance_box.currentText()}  (E)", ZOOM_COLOUR))
             if rect is not None:
@@ -912,7 +949,13 @@ class MainWindow(QMainWindow):
             self.cancel_click()
 
     def _on_click(self, x: float, y: float, button) -> None:
-        if not self.session or (self.worker and self.worker.isRunning()):
+        if not self.session:
+            return
+        if self.worker and self.worker.isRunning():  # say why nothing happens instead of ignoring the click
+            if getattr(self, "warming", False):
+                self.statusBar().showMessage(f"Tracker still loading… {self._loading_note()}")
+            elif not self.behaviour_only:
+                self.statusBar().showMessage("Busy – wait for the current job to finish (or press Stop).")
             return
         if self.behaviour_only:
             self.statusBar().showMessage("Mask tracking is disabled in behaviour-only mode.")
@@ -998,15 +1041,74 @@ class MainWindow(QMainWindow):
         self.render()
 
     # ------------------------------------------------------------------ behaviour annotation
-    def _load_tracklet(self):
-        """The open run's saved tracklet (library runs: this annotator's), or None."""
-        from reeftrack.tracking.tracklet import Tracklet
+    # ------------------------------------------------------------------ other annotators (read-only)
+    def _refresh_others(self) -> None:
+        """Fill the 'Others' labels' picker for the open video and reload their labels."""
+        from reeftrack.annotation.reference import other_annotators
 
-        try:
-            d = self.run.tracking_dir
-        except ValueError:  # several annotators' tracking and none chosen
-            return None
-        return Tracklet.load(d) if (d / "tracklet.json").exists() else None
+        names = other_annotators(self.run, self.annotator_name) if self.run is not None else {}
+        # the current choice, unless the picker was empty (no one else on the last video): then the saved one
+        want = ((self.others_box.currentData() if self.others_box.isEnabled() else None)
+                or str(self.settings.value("others_labels", "all") or "all"))
+        self.others_box.blockSignals(True)
+        self.others_box.clear()
+        self.others_box.addItem("Off", "off")
+        if names:
+            self.others_box.addItem(f"Everyone else ({len(names)})", "all")
+            for slug, name in names.items():
+                self.others_box.addItem(name, slug)
+        i = self.others_box.findData(want)
+        self.others_box.setCurrentIndex(i if i >= 0 else (1 if names and want != "off" else 0))
+        self.others_box.setEnabled(bool(names))
+        if not names:
+            self.others_box.setItemText(0, "none on this video")
+        self.others_box.blockSignals(False)
+        self._on_others_changed(save=False)
+
+    def _on_others_changed(self, _=None, save: bool = True) -> None:
+        from reeftrack.annotation.reference import load_reference
+
+        choice = self.others_box.currentData() or "off"
+        if save and self.others_box.isEnabled():
+            self.settings.setValue("others_labels", choice)  # remembered between sessions
+        if self.run is None or choice == "off":
+            self.ref_events = []
+        else:
+            slugs = [self.others_box.itemData(i) for i in range(2, self.others_box.count())] if choice == "all" else [choice]
+            self.ref_events = load_reference(self.run, slugs, self.n)
+        if self.ref_events:
+            cats = self.cfg.annotation.behaviours if self.cfg else []
+            self.timeline.set_lane("others", [
+                (ev.start, ev.end, (*(behaviour_colour(ev.label, cats) if ev.kind == "behaviours" else LOOP_COLOUR), 150))
+                for ev in self.ref_events])
+        else:
+            self.timeline.remove_lane("others")
+        if self.reader:
+            self.render()
+
+    def jump_out_of_view(self, direction: int) -> None:
+        from reeftrack.annotation.reference import next_out_of_view
+
+        if not self.ref_events:
+            self.statusBar().showMessage("No other annotators' labels shown (Display → Others' labels).", 4000)
+            return
+        f = next_out_of_view(self.ref_events, self.cur, direction)
+        if f is None:
+            self.statusBar().showMessage(f"No {'later' if direction > 0 else 'earlier'} 'Out of view' in others' labels.", 4000)
+            return
+        self.goto(f)
+        self.statusBar().showMessage(f"Frame {f}: start of an 'Out of view' stretch (others' labels).", 4000)
+
+    def _load_tracklet(self):
+        """The open run's saved tracklet (library runs: this annotator's; the laptop's copy if it
+        is newer than the shared one), or None."""
+        from reeftrack.tracking.tracklet import load_for_run
+
+        tr, restored = load_for_run(self.run)
+        if restored:
+            self.statusBar().showMessage("Masks that hadn't reached the shared folder last time were recovered "
+                                         "from this laptop's copy.", 8000)
+        return tr
 
     def _ensure_annotator(self, force: bool = False) -> bool:
         if self.annotator_name and not force:
@@ -1019,6 +1121,7 @@ class MainWindow(QMainWindow):
             self.settings.setValue("annotator", self.annotator_name)
             if changed and self.run is not None and self.run.is_library and self.blog is not None:
                 self._load_logs()  # files are per annotator: switch to this person's files
+                self._refresh_others()
                 self.refresh_behaviours()
                 self.refresh_loops()
                 if self.session is not None and not (self.worker and self.worker.isRunning()):
@@ -1256,8 +1359,8 @@ class MainWindow(QMainWindow):
                 f"this laptop ({errs[0].backup.parent}) and will be saved to RFS on your next change or Ctrl+S.")
         elif getattr(self, "tracking_save_error", None):
             self.save_banner.setText(
-                "⚠ Could not save the masks (is the annotations folder reachable?). Don't close the window: they are "
-                "kept here and saved on your next change or Ctrl+S.")
+                "⚠ Could not save the masks to the shared folder (is RFS connected?). They are safe in a copy on this "
+                "laptop and will be saved to RFS on your next change or Ctrl+S (or next time you open this video).")
         self.save_banner.setVisible(bool(errs) or bool(getattr(self, "tracking_save_error", None)))
 
     # ------------------------------------------------------------------ shared video library
