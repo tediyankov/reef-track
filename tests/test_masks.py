@@ -56,3 +56,16 @@ def test_erode_never_deletes_tiny_mask():
     m = np.zeros((10, 10), bool)
     m[5, 5] = True
     assert erode(m, 2).sum() == 1
+
+
+def test_shift_and_between():
+    from reeftrack.tracking.masks import between, shift
+
+    a = np.zeros((20, 30), bool)
+    a[5:8, 2:6] = True
+    assert centroid(shift(a, 10, 3)) == pytest.approx((13.5, 9.0))
+    assert not shift(a, 40, 0).any() and shift(a, -3, 0).sum() == 9  # off the frame: dropped
+    b = shift(a, 10, 4)
+    mid = between(a, b, 0.5)
+    assert centroid(mid) == pytest.approx((8.5, 8.0)) and area(mid) == area(a)
+    assert np.array_equal(between(a, b, 0.0), a) and np.array_equal(between(a, b, 1.0), b)

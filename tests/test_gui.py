@@ -80,8 +80,21 @@ def test_gui_click_track_undo(tmp_path, occlusion_video, monkeypatch):
     assert win.timeline.breaks  # break marked on the timeline
     win.jump_break(+1)
     assert win.cur == tr.segments[0].end + 1
-    win.undo()
+    win.fast.setChecked(True)  # "Fast" checkbox -> SAM on every 2nd frame for the next Track
+    assert win.session.tc.frame_step == 2
+    win.fast.setChecked(False)
+    assert win.session.tc.frame_step == 1
+    win.goto(15)
+    assert win.btn_cut_after.isEnabled()
+    win.trim("before")  # X: cut the segment from frame 15 on
+    assert tr.segments[0].end == 14 and tr.segments[0].end_reason == "trimmed"
+    win.goto(25)
+    assert not win.btn_cut_after.isEnabled()  # untracked frame
+    win.undo()  # the trim
+    assert win.session.tracklet.segments[0].end == 19
+    win.undo()  # the tracking
     assert not win.session.tracklet.segments
+    assert '"segments": []' in (run.tracking_dir / "tracklet.json").read_text()  # the empty state is saved
     win.close()
 
 

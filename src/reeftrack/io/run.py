@@ -164,7 +164,7 @@ class Run:
             # Hugging Face access, a Mac may need sam2 or cpu), not part of the video's history:
             # always take it from configs/default.yaml (or -c), never from the snapshot.
             if isinstance(snapshot.get("tracking"), dict):
-                for key in ("backend", "device"):
+                for key in ("backend", "device", "mps_half_memory"):
                     snapshot["tracking"].pop(key, None)
             dropped = drop_unknown_keys(snapshot)
             if dropped:

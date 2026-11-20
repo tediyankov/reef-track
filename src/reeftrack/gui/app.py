@@ -9,6 +9,9 @@ Workflow
      the next break, scrub until the fish is back, click it again -> new segment that also
      tracks *backwards* to close the gap from the other side.
   4. Clicking a frame that is already tracked corrects it from that frame on.
+  5. SAM went wrong near the end of a segment? Go to the first bad frame and press X: that frame
+     and everything after it in the segment is deleted (Shift+X: it and everything before).
+     Ctrl+Z undoes the last change (tracking, trim or delete), several steps back.
   Tracklets autosave to <run>/tracking/ after every change (library videos: tracking_<annotator>/).
 
 Behaviour annotation (Behaviour tab; can run alongside tracking, or alone with --behaviour-only)
@@ -23,7 +26,7 @@ Loops (Loops tab): the fish returns to a place it has already been. I at the loo
   I / O / B act on whichever annotation tab is open.
 
 Keys: Space play/pause · ←/→ ±1 frame · Shift+←/→ ±1 s · N/P next/prev break · Enter track
-      Esc cancel · Ctrl+Z undo segment · M toggle masks · Ctrl+S save
+      Esc cancel · X / Shift+X cut segment from / up to here · Ctrl+Z undo · M toggle masks · Ctrl+S save
       I / O mark behaviour start / end · B add behaviour for the marked range
 """
 
@@ -271,11 +274,27 @@ class MainWindow(QMainWindow):
         self.follow = QCheckBox("Follow tracker live")
         self.follow.setChecked(True)
         av.addWidget(self.follow)
+        self.fast = QCheckBox("Fast: SAM on every 2nd frame")
+        self.fast.setToolTip("About 2x faster tracking. SAM looks at every 2nd frame; the frames in between get its "
+                             "mask moved along the fish's motion. Slightly less exact for small, fast fish. "
+                             "Applies to the next Track.")
+        self.fast.toggled.connect(self._on_fast_toggled)
+        av.addWidget(self.fast)
 
         self.seg_list = QListWidget()
         self.seg_list.itemDoubleClicked.connect(lambda it: self.goto(it.data(Qt.ItemDataRole.UserRole)))
-        self.btn_undo = QPushButton("Undo last segment")
+        self.btn_undo = QPushButton("Undo  Ctrl+Z")
+        self.btn_undo.setToolTip("Undo the last change: tracking, trim or delete (several steps back)")
         self.btn_undo.clicked.connect(self.undo)
+        self.btn_cut_after = QPushButton("✂ Cut from here →  X")
+        self.btn_cut_after.setToolTip("Delete this frame and the rest of its segment (SAM went wrong from here on)")
+        self.btn_cut_after.clicked.connect(lambda: self.trim("before"))
+        self.btn_cut_before = QPushButton("✂ ← Cut up to here  ⇧X")
+        self.btn_cut_before.setToolTip("Delete this frame and the start of its segment, up to here")
+        self.btn_cut_before.clicked.connect(lambda: self.trim("after"))
+        self.btn_del_seg = QPushButton("Delete this segment")
+        self.btn_del_seg.setToolTip("Delete the whole segment shown on this frame")
+        self.btn_del_seg.clicked.connect(self.delete_segment)
         self.btn_nextbreak = QPushButton("Next break  N")
         self.btn_nextbreak.clicked.connect(lambda: self.jump_break(+1))
         self.btn_prevbreak = QPushButton("Prev break  P")
@@ -289,7 +308,14 @@ class MainWindow(QMainWindow):
         r2.addWidget(self.btn_prevbreak)
         r2.addWidget(self.btn_nextbreak)
         sv.addLayout(r2)
-        sv.addWidget(self.btn_undo)
+        r3 = QHBoxLayout()
+        r3.addWidget(self.btn_cut_before)
+        r3.addWidget(self.btn_cut_after)
+        sv.addLayout(r3)
+        r4 = QHBoxLayout()
+        r4.addWidget(self.btn_del_seg)
+        r4.addWidget(self.btn_undo)
+        sv.addLayout(r4)
 
         disp = QGroupBox("Display")
         dv = QFormLayout(disp)
@@ -429,6 +455,7 @@ class MainWindow(QMainWindow):
             "Shift+Left": lambda: self.goto(self.cur - self._fps_i()), "Shift+Right": lambda: self.goto(self.cur + self._fps_i()),
             "N": lambda: self.jump_break(+1), "P": lambda: self.jump_break(-1), "Return": self.commit_click,
             "Enter": self.commit_click, "Escape": self._escape, "Z": self.toggle_zoom, "E": self.cycle_enhance, "V": self.toggle_edit, "Ctrl+Z": self.undo,
+            "X": lambda: self.trim("before"), "Shift+X": lambda: self.trim("after"),
             "M": lambda: self.show_masks.toggle(), "Home": lambda: self.goto(0),
             "End": lambda: self.goto(self.n - 1),
             "I": lambda: self._dispatch("in"), "O": lambda: self._dispatch("out"),
@@ -445,6 +472,7 @@ class MainWindow(QMainWindow):
                   self.btn_nextbreak, self.btn_prevbreak):
             w.setEnabled(loaded)
         self.btn_undo.setEnabled(loaded and not busy)
+        self._sync_cut_buttons()
         for pnl in (self.bpanel, self.lpanel):
             for w in (pnl.btn_in, pnl.btn_out, pnl.btn_clear, pnl.btn_add, pnl.btn_edit, pnl.btn_delete):
                 w.setEnabled(loaded)
@@ -532,6 +560,9 @@ class MainWindow(QMainWindow):
             if saved is not None:  # keep the saved masks, with this session's config/device noted
                 saved.meta.update(self.session.tracklet.meta)
                 self.session.tracklet = saved
+            fast = self.settings.value("fast_tracking", None)  # this computer's last choice, else the config
+            self.fast.setChecked(self.cfg.tracking.frame_step > 1 if fast is None else str(fast).lower() == "true")
+            self._on_fast_toggled(self.fast.isChecked(), remember=False)
         self._load_logs()
         self._refresh_others()
         self.zoom, self.zoom_on = None, False
@@ -621,6 +652,7 @@ class MainWindow(QMainWindow):
         self.frame_box.setValue(f)
         self.frame_box.blockSignals(False)
         self.timeline.set_pos(f)
+        self._sync_cut_buttons()
         self.render()
 
     def toggle_play(self) -> None:
@@ -765,7 +797,8 @@ class MainWindow(QMainWindow):
             text = "Find a frame where the focal fish is clearly visible and <b>left-click it</b>."
         elif self.cur in tr.obs:
             text = (f"Tracked · segment {tr.obs[self.cur].segment_id}. If the mask is wrong here, click the fish to "
-                    "<b>correct</b> from this frame.")
+                    "<b>correct</b> from this frame, or press <b>X</b> to cut the segment from here on "
+                    "(<b>Shift+X</b>: up to here).")
         else:
             text = ("Fish not tracked here. When it is back in view, <b>click it to re-acquire</b>; the tracker "
                     "also runs backwards to close the gap.")
@@ -782,8 +815,9 @@ class MainWindow(QMainWindow):
         for f, o in tr.obs.items():
             if 0 <= f < self.n:
                 owner[f] = o.segment_id
-        breaks = sorted({s.end + 1 for s in tr.segments if s.end_reason == "lost" and s.end + 1 < self.n}
-                        | {s.start - 1 for s in tr.segments if s.start_reason == "lost" and s.start > 0})
+        cut = ("lost", "trimmed")
+        breaks = sorted({s.end + 1 for s in tr.segments if s.end_reason in cut and s.end + 1 < self.n}
+                        | {s.start - 1 for s in tr.segments if s.start_reason in cut and s.start > 0})
         self.timeline.set_state(owner, [(s.prompt_frame, s.segment_id) for s in tr.segments], breaks)
         self.seg_list.clear()
         for s in sorted(tr.segments, key=lambda s: s.start):
@@ -1006,11 +1040,12 @@ class MainWindow(QMainWindow):
             return
         if not self.pending or (self.worker and self.worker.isRunning()):
             return
-        f, xy, _, roi, enh = self.pending
+        f, xy, shown, roi, enh = self.pending
         self.pending = None
         sess = self.session
         self._start_tracking(lambda emit, stop: sess.add_click(
-            f, xy, callback=lambda fr, m, v: emit((fr, m is not None, v.flags)), should_stop=stop, roi=roi, enhance=enh))
+            f, xy, callback=lambda fr, m, v: emit((fr, m is not None, v.flags)), should_stop=stop, roi=roi, enhance=enh,
+            preview_mask=shown))
 
     def _start_tracking(self, fn) -> None:
         self.progress.setVisible(True)
@@ -1577,20 +1612,57 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.stop()
 
+    def _on_fast_toggled(self, on: bool, remember: bool = True) -> None:
+        if self.session is not None:
+            self.session.tc.frame_step = 2 if on else 1
+        if remember:
+            self.settings.setValue("fast_tracking", bool(on))
+
+    def _sync_cut_buttons(self) -> None:
+        """Cut / delete act on the segment under the current frame: only enabled on a tracked frame."""
+        on = (self._can_edit_tracklet() and self.reader is not None and self.cur in self.session.tracklet.obs)
+        for w in (self.btn_cut_after, self.btn_cut_before, self.btn_del_seg):
+            w.setEnabled(on)
+
+    def _tracklet_edited(self, msg: str) -> None:
+        self.statusBar().showMessage(msg, 8000)
+        self.refresh_tracklet()
+        self.save()
+        self.render()
+        self._set_enabled(self.reader is not None)
+
+    def _can_edit_tracklet(self) -> bool:
+        return (self.session is not None and not self.behaviour_only and self.edit is None
+                and not (self.worker and self.worker.isRunning()))
+
     def undo(self) -> None:
-        if self.session and not (self.worker and self.worker.isRunning()):
-            seg = self.session.undo()
-            if seg:
-                self.statusBar().showMessage(f"Removed segment {seg.segment_id}")
-                self.refresh_tracklet()
-                self.save()
-                self.render()
+        if self._can_edit_tracklet():
+            what = self.session.undo()
+            if what:
+                self._tracklet_edited(f"Undid {what}")
+
+    def trim(self, keep: str) -> None:
+        """X: delete this frame and the rest of its segment; Shift+X: this frame and the part before."""
+        if not self._can_edit_tracklet():
+            return
+        cut = self.session.trim(self.cur, keep)
+        if cut is None:
+            self.statusBar().showMessage("This frame isn't tracked: go to a frame with a mask to cut there.", 5000)
+            return
+        self._tracklet_edited(f"Deleted frames {cut[0]}–{cut[1]} ({cut[1] - cut[0] + 1} fr). Ctrl+Z to undo.")
+
+    def delete_segment(self) -> None:
+        if not self._can_edit_tracklet() or self.cur not in self.session.tracklet.obs:
+            return
+        seg = self.session.delete_segment(self.session.tracklet.obs[self.cur].segment_id)
+        if seg:
+            self._tracklet_edited(f"Deleted segment {seg.segment_id} (frames {seg.start}–{seg.end}). Ctrl+Z to undo.")
 
     def save(self) -> None:
         if not self.run:
             return
         self.tracking_save_error = None
-        if self.session and self.session.tracklet.segments:
+        if self.session and (self.session.tracklet.segments or self.session.edited):  # edited: may now be empty
             try:
                 self.session.save()
             except OSError as e:  # shared folder unreachable: keep the masks in memory, retry next save

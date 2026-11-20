@@ -56,6 +56,28 @@ def iou(a: np.ndarray, b: np.ndarray) -> float:
     return inter / union if union else 0.0
 
 
+def shift(mask: np.ndarray, dx: float, dy: float) -> np.ndarray:
+    """The mask moved by (dx, dy) pixels (rounded); what moves off the frame is dropped."""
+    out = np.zeros_like(mask, dtype=bool)
+    dx, dy = int(round(dx)), int(round(dy))
+    h, w = mask.shape
+    if abs(dx) >= w or abs(dy) >= h:
+        return out
+    out[max(dy, 0):h + min(dy, 0), max(dx, 0):w + min(dx, 0)] = \
+        mask[max(-dy, 0):h + min(-dy, 0), max(-dx, 0):w + min(-dx, 0)]
+    return out
+
+
+def between(a: np.ndarray, b: np.ndarray, t: float) -> np.ndarray:
+    """A mask a fraction t (0..1) of the way from mask a to mask b: the nearer of the two, moved
+    along the line between their centroids. For frames the tracker skipped (`frame_step`)."""
+    ca, cb = centroid(a), centroid(b)
+    if ca is None or cb is None:
+        return (a if t <= 0.5 else b).astype(bool)
+    dx, dy = cb[0] - ca[0], cb[1] - ca[1]
+    return shift(a, t * dx, t * dy) if t <= 0.5 else shift(b, (t - 1) * dx, (t - 1) * dy)
+
+
 def largest_component(mask: np.ndarray) -> np.ndarray:
     """Keep only the largest connected blob (SAM sometimes adds small far-away fragments)."""
     import cv2

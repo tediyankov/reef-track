@@ -48,12 +48,39 @@ class TrackerBackend(Protocol):
     def preview(self, frame: np.ndarray, points: list[tuple[float, float]], labels: list[int] | None = None) -> StepResult: ...
 
 
+def _half_precision(module, out_dtype) -> None:
+    """Run one sub-module in float16, the rest of the model stays as it is.
+
+    Memory attention (the current frame against ~7 remembered frames, ~29k tokens) is ~70% of
+    each tracking step. On a Mac GPU PyTorch's attention kernel is ~3x faster in float16 than in
+    float32, so the whole step gets ~1.8x faster. Measured on SAM 2.1-small: masks differ from
+    float32 no more than two float32 runs differ from each other (MPS is not bit-exact). The
+    whole model in float16 is no faster than this and breaks the masks (empty / whole frame).
+    """
+    import torch
+
+    if module is None:
+        return
+    module.to(torch.float16)
+    forward = module.forward
+
+    def cast(x):
+        return x.to(torch.float16) if torch.is_tensor(x) and x.is_floating_point() else x
+
+    def half_forward(*args, **kwargs):
+        out = forward(*(cast(a) for a in args), **{k: cast(v) for k, v in kwargs.items()})
+        return out.to(out_dtype) if torch.is_tensor(out) else out
+
+    module.forward = half_forward
+
+
 class HFVideoTracker:
     """SAM 2 / SAM 3 video tracker via Hugging Face transformers, in streaming mode."""
 
     OBJ_ID = 1
 
-    def __init__(self, backend: str, model_id: str, device: str, keep_memory_frames: int = 16):
+    def __init__(self, backend: str, model_id: str, device: str, keep_memory_frames: int = 16,
+                 mps_half_memory: bool = True):
         import torch
 
         if backend == "sam3":
@@ -67,6 +94,8 @@ class HFVideoTracker:
         self.device = device
         self.dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
         self.model = Model.from_pretrained(model_id).to(device, dtype=self.dtype).eval()
+        if device == "mps" and mps_half_memory:
+            _half_precision(getattr(self.model, "memory_attention", None), self.dtype)
         self.processor = Processor.from_pretrained(model_id)
         self.keep = keep_memory_frames
         self.session = None
@@ -198,7 +227,7 @@ def load_backend(tc, device: str) -> TrackerBackend:
     for name in order:
         try:
             log.info("loading %s (%s) on %s", name, tc.model_ids[name], device)
-            return HFVideoTracker(name, tc.model_ids[name], device, tc.keep_memory_frames)
+            return HFVideoTracker(name, tc.model_ids[name], device, tc.keep_memory_frames, tc.mps_half_memory)
         except Exception as e:  # gated repo / no token / offline
             last_err = e
             log.warning("could not load %s: %s", name, str(e).splitlines()[0][:200])

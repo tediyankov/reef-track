@@ -50,6 +50,8 @@ class TrackingConfig(_Strict):
     patience: int = 3
     keep_memory_frames: int = 16
     backfill: bool = True
+    mps_half_memory: bool = True
+    frame_step: int = Field(1, ge=1, le=4)
 
 
 class ReconConfig(_Strict):

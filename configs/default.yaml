@@ -27,6 +27,10 @@ tracking:
   patience: 3                   # consecutive suspicious frames before the tracklet breaks
   keep_memory_frames: 16        # recent frames kept in SAM memory (bounds RAM on long clips)
   backfill: true                # on re-acquisition also propagate *backwards* to fill the gap
+  mps_half_memory: true         # Mac GPU: SAM's memory attention (70% of each step) in float16, ~1.8x
+                                # faster; masks differ no more than between two float32 runs
+  frame_step: 1                 # 2 = SAM sees every 2nd frame, ~1.8x faster; frames in between get the
+                                # neighbouring mask moved along the fish's motion (GUI: "Fast" checkbox)
 
 recon:
   backend: wat3r                # wat3r (underwater-adapted VGGT) | vggt
